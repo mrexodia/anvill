@@ -300,9 +300,9 @@ TEST_SUITE("SwitchLowerLargeFunction") {
     CHECK(lowered_switch->getNumCases() == 4);
 
     llvm::SmallSet<uint64_t, 10> allowed_indices;
-    allowed_indices.insert(llvm::APInt(32, -4).getLimitedValue());
-    allowed_indices.insert(llvm::APInt(32, -1).getLimitedValue());
-    allowed_indices.insert(llvm::APInt(32, -0).getLimitedValue());
+    allowed_indices.insert(llvm::APInt(32, -4, /*isSigned=*/true).getLimitedValue());
+    allowed_indices.insert(llvm::APInt(32, -1, /*isSigned=*/true).getLimitedValue());
+    allowed_indices.insert(llvm::APInt(32, -0, /*isSigned=*/true).getLimitedValue());
     allowed_indices.insert(llvm::APInt(32, 3).getLimitedValue());
 
     for (auto c : lowered_switch->cases()) {

@@ -1,3 +1,4 @@
+#include <llvm/Support/raw_ostream.h>
 #include <anvill/Passes/RemoveStackPointerCExprs.h>
 
 #include <anvill/Transforms.h>
@@ -50,7 +51,7 @@ TEST_SUITE("RemoveStackPointerCExprs") {
     fpm.addPass(RemoveStackPointerCExprs(opt));
     fpm.run(*target_function, fam);
 
-    target_function->dump();
+    target_function->print(llvm::errs());
 
     CHECK(VerifyModule(mod.get()));
 

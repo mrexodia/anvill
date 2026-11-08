@@ -3,21 +3,17 @@
 
 set(DEFAULT_DEPENDENCIES_PREFIX "${CMAKE_SOURCE_DIR}/dependencies/install")
 
-# A layered setup is also supported: when CMAKE_PREFIX_PATH is already set (for
-# example /dependencies in the remill-template Docker image) and the default
-# prefix exists, the default prefix is prepended so that the extra anvill
-# dependencies built with -DBUILD_REMILL_DEPENDENCIES=OFF are found.
-if((CMAKE_PREFIX_PATH OR NOT "$ENV{CMAKE_PREFIX_PATH}" STREQUAL "")
+# A layered setup is also supported: when CMAKE_PREFIX_PATH only comes from the
+# environment (for example /dependencies in the remill-template Docker image)
+# and the default prefix exists, the default prefix is prepended so that the
+# extra anvill dependencies built with -DBUILD_REMILL_DEPENDENCIES=OFF are
+# found. An explicit -DCMAKE_PREFIX_PATH is always used as-is.
+if(NOT CMAKE_PREFIX_PATH AND NOT "$ENV{CMAKE_PREFIX_PATH}" STREQUAL ""
    AND EXISTS "${DEFAULT_DEPENDENCIES_PREFIX}/.build_config")
-    set(_layered_prefix_path ${CMAKE_PREFIX_PATH})
-    if(NOT _layered_prefix_path)
-        string(REPLACE ":" ";" _layered_prefix_path "$ENV{CMAKE_PREFIX_PATH}")
-    endif()
-    if(NOT "${DEFAULT_DEPENDENCIES_PREFIX}" IN_LIST _layered_prefix_path)
-        list(PREPEND _layered_prefix_path "${DEFAULT_DEPENDENCIES_PREFIX}")
-        set(CMAKE_PREFIX_PATH "${_layered_prefix_path}" CACHE PATH "CMake package search prefixes" FORCE)
-        message(STATUS "Using layered dependency prefix: ${CMAKE_PREFIX_PATH}")
-    endif()
+    string(REPLACE ":" ";" _layered_prefix_path "$ENV{CMAKE_PREFIX_PATH}")
+    list(PREPEND _layered_prefix_path "${DEFAULT_DEPENDENCIES_PREFIX}")
+    set(CMAKE_PREFIX_PATH "${_layered_prefix_path}" CACHE PATH "CMake package search prefixes" FORCE)
+    message(STATUS "Using layered dependency prefix: ${CMAKE_PREFIX_PATH}")
     unset(_layered_prefix_path)
 endif()
 

@@ -100,6 +100,8 @@ Dependencies, from `CMakeLists.txt`:
 - remill, plus sleigh (optional), XED, gflags, glog, Z3, doctest, Protobuf.
 - These usually come from Trail of Bits' `cxx-common` vcpkg bundle.
 
+> **Update:** after this report was written, this branch was ported to the latest remill and LLVM 19+ with a local `dependencies/` prefix, following [remill-template](https://github.com/LLVMParty/remill-template). The rest of this report still describes the original code at `9948d26`; see §16.6 for what changed in the build.
+
 ---
 
 ## 3. Remill concepts you must understand first
@@ -5045,6 +5047,30 @@ A `binja` stage adds `scripts/docker-spec-entrypoint.sh`, which runs the legacy 
    - The AnghaBench-1K corpus (`scripts/test-angha-1k.sh`, `ci/angha_1k_test_settings.json`).
 
    These use the `lifting-tools-ci` submodule. Its settings files list known-bad functions and timeouts. See §15.12.
+
+### 16.6 Build after the remill / LLVM 19 port
+
+The cxx-common/vcpkg setup described above has since been replaced by the [remill-template](https://github.com/LLVMParty/remill-template) layout:
+
+- **Remill** is a submodule at `dependencies/remill` (latest `master`) and is built as part of anvill with `add_subdirectory`, with remill testing turned off. The old root `remill` submodule, `cmake/modules/Find*.cmake`, `CMakePresets.json` and the cxx-common scripts are gone.
+- **`dependencies/`** is a CMake superbuild (from the template) that installs a prefix in `dependencies/install`. It contains:
+  - remill's dependencies: gflags, glog, googletest and XED;
+  - sleigh, with remill's patches;
+  - anvill's extras: doctest 2.4.11, protobuf 21.12 (the last release without abseil) and Z3 4.13.4;
+  - LLVM, which by default is the LLVMParty 21.1.6 prebuilt (or `USE_EXTERNAL_LLVM=ON` / `DOWNLOAD_PREBUILT_LLVM=OFF`).
+
+  `BUILD_REMILL_DEPENDENCIES=OFF` skips remill's dependencies when they already exist.
+- **`cmake/SetupDependenciesPrefix.cmake`** picks up `dependencies/install` automatically. If `CMAKE_PREFIX_PATH` is already set, as in the Docker image, it layers `dependencies/install` on top of it.
+- **Docker / CI.** `ghcr.io/llvmparty/remill-template/dependencies:22.04-llvm19.1.7-remill2026.03.20` already provides LLVM 19.1.7 and remill's dependencies in `/dependencies`, so only the extras are built on top of it. The CI workflow, the root `Dockerfile` and `dependencies/Dockerfile` all use that image.
+- **Defaults.** `ANVILL_ENABLE_INSTALL` and `ANVILL_ENABLE_PYTHON3_LIBS` now default to OFF.
+- **Source changes.** These were mechanical LLVM 16–19 API updates:
+  - `starts_with`, `std::optional` and the `TypeSize` getters;
+  - `ConstantFoldIntegerCast` in place of the removed `zext` constant expression;
+  - the new-pass-manager cleanup in `FunctionLifter`;
+  - `icmp` constant-expression handling compiled out on LLVM ≥ 19;
+  - three test `.ll` fixtures rewritten without removed constant expressions.
+
+  The remill API that anvill uses was unchanged between the old pin (Dec 2022) and current `master`.
 
 ---
 

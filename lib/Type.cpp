@@ -11,6 +11,7 @@
 #define ANVILL_USE_WRAPPED_TYPES 0
 
 // clang-format off
+#include <llvm/Config/llvm-config.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
@@ -72,7 +73,9 @@ void TypeSpecifierImpl::EncodeType(
         ss << 'D';
       }
       break;
+#if LLVM_VERSION_MAJOR < 20
     case llvm::Type::X86_MMXTyID: ss << 'M'; break;
+#endif
     case llvm::Type::IntegerTyID: {
       const auto derived = llvm::cast<llvm::IntegerType>(&type);
       constexpr auto sign = false;
@@ -394,7 +397,12 @@ TypeDictionary::TypeDictionary(llvm::LLVMContext &context) {
   u.named.float80_12 = llvm::Type::getX86_FP80Ty(context);
   u.named.float80_16 = u.named.float80_12;
   u.named.float128 = llvm::Type::getFP128Ty(context);
+#if LLVM_VERSION_MAJOR < 20
   u.named.m64 = llvm::Type::getX86_MMXTy(context);
+#else
+  // x86_mmx was removed in LLVM 20 and replaced by <1 x i64>.
+  u.named.m64 = llvm::FixedVectorType::get(llvm::Type::getInt64Ty(context), 1);
+#endif
   u.named.void_ = llvm::Type::getVoidTy(context);
   u.named.padding = u.named.char_;
 #endif
