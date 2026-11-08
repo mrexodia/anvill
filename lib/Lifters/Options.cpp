@@ -7,6 +7,7 @@
  */
 
 #include <anvill/Lifters.h>
+#include <anvill/Utils.h>
 
 #include <anvill/ABI.h>
 #include <anvill/Providers.h>
@@ -115,7 +116,7 @@ llvm::Value *LifterOptions::ConcreteReturnAddressInit(
   type = llvm::dyn_cast<llvm::IntegerType>(
       remill::RecontextualizeType(type, context));
 
-  auto ret_addr_func = llvm::Intrinsic::getDeclaration(
+  auto ret_addr_func = GetOrInsertIntrinsicDeclaration(
       module, llvm::Intrinsic::returnaddress);
   llvm::Value *args[] = {
       llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 0)};

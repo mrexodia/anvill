@@ -120,7 +120,7 @@ llvm::Constant *DataLifter::GetOrDeclareData(const VariableDecl &decl,
     const auto address_space =
         found_by_address->getType()->getPointerAddressSpace();
     const auto ce = llvm::ConstantExpr::getBitCast(
-        found_by_address, type->getPointerTo(address_space));
+        found_by_address, llvm::PointerType::get(context, address_space));
     lifter_context.AddEntity(ce, decl.address);
     return wrap_with_alias(ce);
   }

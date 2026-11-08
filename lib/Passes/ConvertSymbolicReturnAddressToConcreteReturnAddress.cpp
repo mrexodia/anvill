@@ -78,7 +78,7 @@ ConvertSymbolicReturnAddressToConcreteReturnAddress::run(
   };
 
   llvm::LLVMContext &context = module->getContext();
-  llvm::Function *ret_addr_func = llvm::Intrinsic::getDeclaration(
+  llvm::Function *ret_addr_func = GetOrInsertIntrinsicDeclaration(
       module, llvm::Intrinsic::returnaddress);
   llvm::Value *args[] = {
       llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 0)};

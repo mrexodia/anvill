@@ -1,6 +1,4 @@
-build
-Dockerfile*
-.travis.yml
-.github*
-LICENSE
-README.md
+.git
+build*/
+dependencies/build/
+dependencies/install/

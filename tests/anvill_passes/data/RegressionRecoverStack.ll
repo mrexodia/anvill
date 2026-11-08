@@ -10,6 +10,7 @@ target triple = "i386-pc-linux-gnu-elf"
 declare zeroext i1 @__remill_flag_computation_sign(i1 zeroext, ...) local_unnamed_addr
 
 define i1 @slice() local_unnamed_addr {
-  %1 = call zeroext i1 (i1, ...) @__remill_flag_computation_sign(i1 zeroext icmp slt (i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -12), i32 0), i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -12))
+  %ce.1 = icmp slt i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -12), 0
+  %1 = call zeroext i1 (i1, ...) @__remill_flag_computation_sign(i1 zeroext %ce.1, i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -12))
   ret i1 %1
 }

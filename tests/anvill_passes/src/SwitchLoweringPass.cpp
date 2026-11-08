@@ -1,4 +1,5 @@
 #include <anvill/Passes/JumpTableAnalysis.h>
+#include <llvm/Support/Endian.h>
 #include <anvill/Passes/LowerSwitchIntrinsics.h>
 #include <anvill/Providers.h>
 #include <anvill/Transforms.h>
@@ -70,7 +71,7 @@ namespace {
 
 static llvm::Function *FindFunction(llvm::Module *module, std::string name) {
   for (auto &function : *module) {
-    if (function.getName().equals(name)) {
+    if (function.getName() == name) {
       return &function;
     }
   }

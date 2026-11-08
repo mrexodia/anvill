@@ -26,94 +26,72 @@ If you are experiencing undocumented problems with Anvill then ask for help in t
 
 ## Supported Platforms
 
-Anvill is supported on Linux platforms and has been tested on Ubuntu 20.04.
+Anvill is supported on Linux and macOS. It is built against a recent [Remill](https://github.com/lifting-bits/remill) (a submodule in `dependencies/remill`) and LLVM 19 or newer.
 
 ## Dependencies
 
-Most of Anvill's dependencies can be provided by the [cxx-common](https://github.com/lifting-bits/cxx-common) repository. Trail of Bits hosts downloadable, pre-built versions of the libraries for select operating systems, which makes it substantially easier to get up and running with Anvill. Nonetheless, the following table represents most of Anvill's dependencies.
+All dependencies are built into a local CMake prefix (`dependencies/install`) by a small superbuild in the [`dependencies`](dependencies) folder, following the [remill-template](https://github.com/LLVMParty/remill-template) approach:
 
-| Name                                                       | Version |
-| ---------------------------------------------------------- | ------- |
-| [Git](https://git-scm.com/)                                | Latest  |
-| [CMake](https://cmake.org/)                                | 3.14+   |
-| [Clang](http://clang.llvm.org/)                            | 12.0+   |
-| [Remill](https://github.com/lifting-bits/remill)           | Latest  |
-| [Python](https://www.python.org/)                          | 3.9     |
-| [Ghidra](https://github.com/NationalSecurityAgency/ghidra) | Latest  |
+| Name | Version | Needed by |
+| ---- | ------- | --------- |
+| [LLVM](https://llvm.org) | 21.1.6 prebuilt by default (any LLVM >= 19 works with `-DUSE_EXTERNAL_LLVM=ON`) | remill, anvill |
+| gflags, glog, XED, googletest | see [`dependencies/CMakeLists.txt`](dependencies/CMakeLists.txt) | remill |
+| [sleigh](https://github.com/lifting-bits/sleigh) | `7c6b742` (with remill's patches) | remill |
+| [doctest](https://github.com/doctest/doctest) | 2.4.11 | anvill tests |
+| [protobuf](https://github.com/protocolbuffers/protobuf) | 21.12 | anvill specification format |
+| [Z3](https://github.com/Z3Prover/z3) | 4.13.4 | anvill branch/jump-table analyses |
+
+You need Git, CMake 3.21+, Ninja and Clang.
 
 ## Getting and Building the Code
 
-### On Linux
-First, update aptitude and get install the baseline dependencies.
+### Local build
 
 ```shell
-dpkg --add-architecture i386
-
-sudo apt-get update
-sudo apt-get upgrade
-
-sudo apt-get install \
-     git \
-     python3.8 \
-     python3-pip \
-     wget \
-     curl \
-     build-essential \
-     libtinfo-dev \
-     lsb-release \
-     zlib1g-dev \
-     ccache \
-     cmake \
-     libc6-dev:i386 \
-     'libstdc++-*-dev:i386' \
-     g++-multilib
-
-# Ubuntu 14.04, 16.04
-sudo apt-get install realpath
-```
-
-Assuming we have [Remill](https://github.com/lifting-bits/remill) properly installed the following steps provide a fresh build of Anvill.
-
-```shell
-# clone anvill repository
 git clone https://github.com/lifting-bits/anvill.git
-
-# update the git submodules
+cd anvill
 git submodule update --init --recursive
 
-# create a build dir
-mkdir anvill-build && cd anvill-build
+# Build the dependency prefix (dependencies/install)
+cmake -G Ninja -S dependencies -B dependencies/build -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+cmake --build dependencies/build
 
-# configure
-CC=clang cmake ../anvill
+# Build anvill (remill is compiled as part of this build)
+cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+cmake --build build
 
-# build
-make -j 5
-
-# install
-sudo make install
+# Run the tests
+ctest --test-dir build --output-on-failure
 ```
 
-Or you can tell CMake where to find the remill installation prefix by passing `-Dremill_DIR="<remill_prefix>/lib/cmake/remill"` during configuration.
+The default `dependencies/install` prefix is detected automatically. To use an existing LLVM pass `-DUSE_EXTERNAL_LLVM=ON` (and point `CMAKE_PREFIX_PATH` at it) when configuring the dependencies; to compile LLVM from source pass `-DDOWNLOAD_PREBUILT_LLVM=OFF`. See [`dependencies/README.md`](dependencies/README.md) for details.
+
+### Using the remill-template Docker image
+
+The [remill-template](https://github.com/LLVMParty/remill-template) dependency image already contains LLVM 19.1.7, gflags, glog, googletest and XED in `/dependencies`. Only the anvill-specific dependencies need to be built on top of it (`-DBUILD_REMILL_DEPENDENCIES=OFF`):
+
+```shell
+docker run --rm -it -v "$PWD:/anvill" -w /anvill \
+  ghcr.io/llvmparty/remill-template/dependencies:22.04-llvm19.1.7-remill2026.03.20 bash
+
+# inside the container:
+cmake -G Ninja -S dependencies -B dependencies/build -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+  -DUSE_EXTERNAL_LLVM=ON -DBUILD_REMILL_DEPENDENCIES=OFF
+cmake --build dependencies/build
+cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+Because `CMAKE_PREFIX_PATH=/dependencies` is set in the image, the anvill build automatically layers `dependencies/install` on top of it. Alternatively, [`dependencies/Dockerfile`](dependencies/Dockerfile) bakes the extra dependencies into a derived image.
 
 ### Running tests
 
-1. Configure with the following parameter: `-DANVILL_ENABLE_TESTS=true`
-2. Run the **test** target: `cmake --build build_folder --target test`
-
-### Docker image
-
-To build via Docker run, specify the architecture, base Ubuntu image and LLVM version. For example, to build Anvill linking against LLVM 14 on Ubuntu 20.04 on AMD64 do:
-
-```shell
-ARCH=amd64; UBUNTU_VERSION=20.04; LLVM=14; \
-   docker build . \
-   -t anvill-llvm${LLVM}-ubuntu${UBUNTU_VERSION}-${ARCH} \
-   -f Dockerfile \
-   --build-arg UBUNTU_VERSION=${UBUNTU_VERSION} \
-   --build-arg ARCH=${ARCH} \
-   --build-arg LLVM_VERSION=${LLVM}
-```
+Tests are enabled by default (`-DANVILL_ENABLE_TESTS=OFF` disables them). Run them with `ctest --test-dir build`.
 
 ## `anvill-specify-bitcode (Currently unsupported)`
 

@@ -20,7 +20,6 @@ set(POST_CONFIGURE_FILE "${CMAKE_CURRENT_BINARY_DIR}/Version.cpp")
 set(GIT_WORKING_DIR "${PROJECT_SOURCE_DIR}")
 include("${PROJECT_SOURCE_DIR}/cmake/git_watcher.cmake")
 
-find_package(Protobuf REQUIRED)
 protobuf_generate_cpp(
   SPEC_PROTO_SOURCES
   SPEC_PROTO_HEADERS
@@ -182,6 +181,7 @@ target_include_directories(anvill PUBLIC
 target_link_libraries(anvill
   PUBLIC
     remill
+    z3::libz3
   PRIVATE
     protobuf::libprotobuf
 )
