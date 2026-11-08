@@ -70,6 +70,10 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/remill/CMakeLists.txt")
   message(FATAL_ERROR "The remill submodule is missing. Run: git submodule update --init --recursive")
 endif()
 set(GFLAGS_USE_TARGET_NAMESPACE ON)
+
+# The git version watchers (anvill and remill) must not fail the build when
+# the sources are not a git checkout, e.g. in a Docker build context.
+set(GIT_FAIL_IF_NONZERO_EXIT FALSE)
 set(REMILL_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
 set(REMILL_ENABLE_INSTALL_TARGET ${ANVILL_ENABLE_INSTALL} CACHE BOOL "" FORCE)
 find_package(sleigh CONFIG QUIET COMPONENTS Support Specs)
