@@ -4,7 +4,7 @@ Standalone dependencies for anvill based on [LLVMParty/packages](https://github.
 
 This builds:
 
-- remill's third-party dependencies: gflags, glog, googletest and XED (disable with `-DBUILD_REMILL_DEPENDENCIES=OFF` when they are already available, e.g. in the remill-template Docker image)
+- remill's third-party dependencies: gflags, glog, googletest and XED (disable with `-DBUILD_REMILL_DEPENDENCIES=OFF` when they are already available)
 - sleigh, with remill's patches from `dependencies/remill/dependencies` (disable with `-DENABLE_SLEIGH=OFF`; remill then fetches it itself)
 - anvill's own dependencies: doctest, protobuf (21.12, the last release without abseil) and Z3
 
@@ -24,17 +24,4 @@ This will create a [CMake prefix](https://cmake.org/cmake/help/latest/command/fi
 
 ## Docker
 
-On top of the remill-template image (LLVM 19.1.7 and remill's dependencies in `/dependencies`):
-
-```sh
-cmake -G Ninja -S dependencies -B dependencies/build -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-  -DUSE_EXTERNAL_LLVM=ON -DBUILD_REMILL_DEPENDENCIES=OFF
-cmake --build dependencies/build
-```
-
-The [`Dockerfile`](Dockerfile) in this folder bakes these extra dependencies into `/anvill-dependencies` in a derived image:
-
-```sh
-docker build -t anvill-dependencies dependencies
-```
+The superbuild is not needed with the remill-template Docker image (`ghcr.io/llvmparty/remill-template/dependencies:22.04-llvm19.1.7-remill2026.03.20`): it already provides LLVM and remill's dependencies, and Z3, protobuf and doctest can be installed from the Ubuntu packages. See the main [README](../README.md#using-the-remill-template-docker-image).

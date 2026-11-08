@@ -36,11 +36,29 @@ if(ANVILL_ENABLE_INSTALL)
 endif(ANVILL_ENABLE_INSTALL)
 
 find_package(LLVM-Wrapper REQUIRED)
-find_package(Z3 CONFIG REQUIRED)
 find_package(doctest CONFIG REQUIRED)
+
+# Z3 and protobuf come either from the dependencies prefix (CMake config
+# packages) or from system packages without CMake configs (e.g. Ubuntu's
+# libz3-dev / libprotobuf-dev in the remill-template Docker image).
+find_package(Z3 CONFIG QUIET)
+if(NOT Z3_FOUND)
+  find_path(Z3_INCLUDE_DIR z3++.h REQUIRED)
+  find_library(Z3_LIBRARY z3 REQUIRED)
+  add_library(z3::libz3 UNKNOWN IMPORTED)
+  set_target_properties(z3::libz3 PROPERTIES
+    IMPORTED_LOCATION "${Z3_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${Z3_INCLUDE_DIR}"
+  )
+  set(Z3_VERSION_STRING "${Z3_LIBRARY} (system)")
+endif()
+
 # protobuf_MODULE_COMPATIBLE provides protobuf_generate_cpp in config mode
 set(protobuf_MODULE_COMPATIBLE ON)
-find_package(Protobuf CONFIG REQUIRED)
+find_package(Protobuf CONFIG QUIET)
+if(NOT Protobuf_FOUND)
+  find_package(Protobuf MODULE REQUIRED)
+endif()
 
 message(STATUS "anvill: LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "anvill: Z3 ${Z3_VERSION_STRING}")

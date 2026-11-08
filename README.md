@@ -70,24 +70,21 @@ The default `dependencies/install` prefix is detected automatically. To use an e
 
 ### Using the remill-template Docker image
 
-The [remill-template](https://github.com/LLVMParty/remill-template) dependency image already contains LLVM 19.1.7, gflags, glog, googletest and XED in `/dependencies`. Only the anvill-specific dependencies need to be built on top of it (`-DBUILD_REMILL_DEPENDENCIES=OFF`):
+The [remill-template](https://github.com/LLVMParty/remill-template) dependency image already contains LLVM 19.1.7 and remill's dependencies (gflags, glog, XED) in `/dependencies`. No dependency prefix needs to be built: install Z3, protobuf and doctest from the Ubuntu packages and build anvill directly (remill fetches and builds sleigh itself):
 
 ```shell
 docker run --rm -it -v "$PWD:/anvill" -w /anvill \
   ghcr.io/llvmparty/remill-template/dependencies:22.04-llvm19.1.7-remill2026.03.20 bash
 
 # inside the container:
-cmake -G Ninja -S dependencies -B dependencies/build -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-  -DUSE_EXTERNAL_LLVM=ON -DBUILD_REMILL_DEPENDENCIES=OFF
-cmake --build dependencies/build
+apt-get update && apt-get install -y libz3-dev libprotobuf-dev protobuf-compiler doctest-dev
 cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-Because `CMAKE_PREFIX_PATH=/dependencies` is set in the image, the anvill build automatically layers `dependencies/install` on top of it. Alternatively, [`dependencies/Dockerfile`](dependencies/Dockerfile) bakes the extra dependencies into a derived image.
+The root [`Dockerfile`](Dockerfile) does the same and produces an image whose entrypoint is `anvill-decompile-spec`.
 
 ### Running tests
 

@@ -365,11 +365,11 @@ Result<ParameterDecl, std::string> ProtobufTranslator::DecodeParameter(
 
 anvill::Result<TypeSpec, std::string>
 ProtobufTranslator::DecodeType(const ::specification::TypeSpec &obj) const {
-  if (obj.has_base()) {
+  if ((obj.type_case() == ::specification::TypeSpec::kBase)) {
     auto base = obj.base();
     return {static_cast<BaseType>(base)};
   }
-  if (obj.has_unknown()) {
+  if ((obj.type_case() == ::specification::TypeSpec::kUnknown)) {
     return {UnknownType{obj.unknown()}};
   }
   if (obj.has_pointer()) {
@@ -437,7 +437,7 @@ ProtobufTranslator::DecodeType(const ::specification::TypeSpec &obj) const {
       res->arguments.push_back(std::move(maybe_argtype.Value()));
     }
   }
-  if (obj.has_alias()) {
+  if ((obj.type_case() == ::specification::TypeSpec::kAlias)) {
     return type_map.at(obj.alias());
   }
 
@@ -570,7 +570,7 @@ Result<VariableDecl, std::string> ProtobufTranslator::DecodeGlobalVar(
 anvill::Result<TypeSpec, std::string> ProtobufTranslator::DecodeType(
     const ::specification::TypeSpec &obj,
     const std::unordered_map<std::int64_t, ::specification::TypeSpec> &map) {
-  if (obj.has_alias()) {
+  if ((obj.type_case() == ::specification::TypeSpec::kAlias)) {
     auto alias = obj.alias();
     if (type_map.count(alias)) {
       return type_map[alias];

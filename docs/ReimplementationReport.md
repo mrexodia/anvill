@@ -5061,7 +5061,7 @@ The cxx-common/vcpkg setup described above has since been replaced by the [remil
 
   `BUILD_REMILL_DEPENDENCIES=OFF` skips remill's dependencies when they already exist.
 - **`cmake/SetupDependenciesPrefix.cmake`** picks up `dependencies/install` automatically. If `CMAKE_PREFIX_PATH` is already set, as in the Docker image, it layers `dependencies/install` on top of it.
-- **Docker / CI.** `ghcr.io/llvmparty/remill-template/dependencies:22.04-llvm19.1.7-remill2026.03.20` already provides LLVM 19.1.7 and remill's dependencies in `/dependencies`, so only the extras are built on top of it. The CI workflow, the root `Dockerfile` and `dependencies/Dockerfile` all use that image.
+- **Docker / CI.** `ghcr.io/llvmparty/remill-template/dependencies:22.04-llvm19.1.7-remill2026.03.20` already provides LLVM 19.1.7 and remill's dependencies in `/dependencies`. The CI job and the root `Dockerfile` use that image as-is: they install Z3, protobuf and doctest from the Ubuntu packages and build anvill directly, without a dependency superbuild. Remill fetches sleigh itself, and the CMake falls back to module-mode `FindProtobuf` and a manual Z3 lookup when no CMake config packages exist.
 - **Defaults.** `ANVILL_ENABLE_INSTALL` and `ANVILL_ENABLE_PYTHON3_LIBS` now default to OFF.
 - **Source changes.** These were mechanical LLVM 16–19 API updates:
   - `starts_with`, `std::optional` and the `TypeSize` getters;
