@@ -36,7 +36,7 @@
 *.pyc
 anvill.egg-info/*
 dist/*
-build/*
+build*/
 anvill/python/anvill.egg-info/*
 anvill/python/build/*
 anvill/python/dist/*
