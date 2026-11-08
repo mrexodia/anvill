@@ -81,6 +81,7 @@ if(sleigh_FOUND)
   set(REMILL_FETCH_SLEIGH OFF CACHE BOOL "" FORCE)
 else()
   message(STATUS "anvill: sleigh not found in the dependency prefix, remill will fetch it")
+  set(REMILL_FETCH_SLEIGH ON CACHE BOOL "" FORCE)
 endif()
 add_subdirectory("dependencies/remill")
 

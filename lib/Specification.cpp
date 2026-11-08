@@ -15,6 +15,7 @@
 #include <remill/BC/Error.h>
 #include <remill/BC/Util.h>
 #include <remill/OS/OS.h>
+#include <google/protobuf/text_format.h>
 #include <specification.pb.h>
 #include <stddef.h>
 
@@ -370,6 +371,20 @@ Specification::DecodeFromPB(llvm::LLVMContext &context, std::istream &pb) {
   }
 
   return Specification(std::move(pimpl));
+}
+
+anvill::Result<Specification, std::string>
+Specification::DecodeFromTextPB(llvm::LLVMContext &context,
+                                const std::string &text) {
+  ::specification::Specification spec;
+  if (!google::protobuf::TextFormat::ParseFromString(text, &spec)) {
+    return {"Failed to parse text-format specification"};
+  }
+  std::string pb;
+  if (!spec.SerializeToString(&pb)) {
+    return {"Failed to serialize specification"};
+  }
+  return DecodeFromPB(context, pb);
 }
 
 // Return the function beginning at `address`, or an empty `shared_ptr`.

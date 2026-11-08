@@ -30,8 +30,14 @@
 #include <string>
 #include <unordered_set>
 
-DEFINE_string(spec, "", "Path to a JSON specification of code to decompile.");
+DEFINE_string(spec, "",
+              "Path to a protobuf specification of code to decompile. Files "
+              "ending in .textproto or .txtpb are parsed as protobuf text "
+              "format, anything else as binary protobuf.");
 DEFINE_string(ir_out, "", "Path to file where the LLVM IR should be saved.");
+DEFINE_string(ir_pre_opt, "",
+              "Path to file where the LLVM IR should be saved after lifting, "
+              "before the optimization pipeline runs.");
 DEFINE_string(bc_out, "",
               "Path to file where the LLVM bitcode should be "
               "saved.");
@@ -110,8 +116,15 @@ int main(int argc, char *argv[]) {
 #endif
   llvm::Module module("lifted_code", context);
 
+  llvm::StringRef spec_path(FLAGS_spec);
+  const bool is_text_spec =
+      spec_path.ends_with(".textproto") || spec_path.ends_with(".txtpb");
   auto maybe_spec =
-      anvill::Specification::DecodeFromPB(context, buff->getBuffer().str());
+      is_text_spec
+          ? anvill::Specification::DecodeFromTextPB(context,
+                                                    buff->getBuffer().str())
+          : anvill::Specification::DecodeFromPB(context,
+                                                buff->getBuffer().str());
 
   if (!maybe_spec.Succeeded()) {
     std::cerr << maybe_spec.TakeError() << std::endl;
@@ -239,6 +252,13 @@ int main(int argc, char *argv[]) {
 
   if (!FLAGS_stats_out.empty()) {
     llvm::EnableStatistics();
+  }
+
+  if (!FLAGS_ir_pre_opt.empty()) {
+    if (!remill::StoreModuleIRToFile(&module, FLAGS_ir_pre_opt, true)) {
+      std::cerr << "Could not save LLVM IR to " << FLAGS_ir_pre_opt << '\n';
+      return EXIT_FAILURE;
+    }
   }
 
   anvill::OptimizeModule(lifter, module);

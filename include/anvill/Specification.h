@@ -122,6 +122,11 @@ class Specification {
   static anvill::Result<Specification, std::string>
   DecodeFromPB(llvm::LLVMContext &context, std::istream &pb);
 
+  // Try to create a program from a protobuf specification in the protobuf
+  // text format (`.textproto`). Returns a string error if something went wrong.
+  static anvill::Result<Specification, std::string>
+  DecodeFromTextPB(llvm::LLVMContext &context, const std::string &text);
+
   // Return the function beginning at `address`, or an empty `shared_ptr`.
   std::shared_ptr<const FunctionDecl> FunctionAt(std::uint64_t address) const;
 
