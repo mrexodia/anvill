@@ -346,6 +346,13 @@ So a producer must emit a `Jump` record for **every** direct jump, a `Call` reco
    - `return_address`: decoded with type `uint<address_size>`. If absent, `return_address.type = void`, meaning there is no return address.
    - `return_stack_pointer.reg` is **required** (otherwise the error "Non-present or non-object 'return_stack_pointer'"). The offset defaults to 0.
    - `return`: **one** TypeSpec applied to **every** `Value` in `return.values`. With N values, you get N `ValueDecl`s of the same type.
+   - **`return.type` is always decoded, even when there are no return values.** `DecodeType(function.return_().type())` runs before the values are examined, and an absent `return` or `return.type` is an unset proto3 oneof, which fails with "Unknown/invalid data type". The function or call site is then skipped with a warning. **[QUIRK]** A void-returning prototype must therefore still carry a type and no values:
+
+     ```textproto
+     return { type { base: BT_VOID } }      # no `values` → void return
+     ```
+
+     The same applies to `Callsite.callable` and to the `--default_callable_spec` file (§14).
    - The LLVM type is `FunctionType(ret, [param types], is_variadic)`. `ret` is `void` for 0 returns, the single return type for 1, and otherwise a **literal non-packed** `StructType::get(ctx, {types})`.
 
 Example: a protobuf text-format function for `int main(int argc, char **argv)` on amd64 Linux.
@@ -5053,7 +5060,7 @@ These are grouped by component, with the section that explains each one. A clean
 5. `VariableContaining` only matches exact start addresses.
 6. `overrides` is mandatory. A spec with no control flow must still contain an empty `overrides {}`.
 7. `CALLING_CONVENTION_CDECL = 1` is not a defined LLVM calling-convention ID (C is 0, fastcc is 8). The value is cast straight to `CallingConv::ID`.
-8. `Callable.return` has a single type applied to every return location.
+8. `Callable.return` has a single type applied to every return location. `return.type` is decoded unconditionally, so a void prototype must still send `return { type { base: BT_VOID } }`. Omitting `return` makes the loader skip the function (§5.4).
 9. `Call.return_address`, `Call.is_tailcall`, `Call.stop`, `Return.stop` and `Jump.stop` are parsed but ignored by the lifter. `StructType.identifier` is ignored too.
 10. `docs/SpecificationFormat.md` describes the removed JSON format. The `--spec` help text also says JSON.
 
