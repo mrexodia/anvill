@@ -7831,7 +7831,7 @@ A `binja` stage adds `scripts/docker-spec-entrypoint.sh`, which runs the legacy 
 
 The cxx-common/vcpkg setup described above has since been replaced by the [remill-template](https://github.com/LLVMParty/remill-template) layout:
 
-- **Remill** is a submodule at `dependencies/remill` (latest `master`) and is built as part of anvill with `add_subdirectory`, with remill testing turned off. The old root `remill` submodule, `cmake/modules/Find*.cmake`, `CMakePresets.json` and the cxx-common scripts are gone.
+- **Remill** is a submodule at `dependencies/remill` (LLVMParty's fork, branch `anvill-sparc-sleigh`, see below) and is built as part of anvill with `add_subdirectory`, with remill testing turned off. The old root `remill` submodule, `cmake/modules/Find*.cmake`, `CMakePresets.json` and the cxx-common scripts are gone.
 - **`dependencies/`** is a CMake superbuild (from the template) that installs a prefix in `dependencies/install`. It contains:
   - remill's dependencies: gflags, glog, googletest and XED;
   - sleigh, with remill's patches;
@@ -7842,9 +7842,10 @@ The cxx-common/vcpkg setup described above has since been replaced by the [remil
 - **`cmake/SetupDependenciesPrefix.cmake`** picks up `dependencies/install` automatically. If `CMAKE_PREFIX_PATH` is already set, as in the Docker image, it layers `dependencies/install` on top of it.
 - **Docker / CI.** `ghcr.io/llvmparty/remill-template/dependencies:22.04-llvm19.1.7-remill2026.03.20` already provides LLVM 19.1.7 and remill's dependencies in `/dependencies`. The CI job and the root `Dockerfile` use that image as-is: they install Z3, protobuf and doctest from the Ubuntu packages and build anvill directly, without a dependency superbuild. Remill fetches sleigh itself, and the CMake falls back to module-mode `FindProtobuf` and a manual Z3 lookup when no CMake config packages exist.
 - **Defaults.** `ANVILL_ENABLE_INSTALL` and `ANVILL_ENABLE_PYTHON3_LIBS` now default to OFF.
-- **remill patch.** `dependencies/patches/remill/*.patch` are applied to the remill submodule when anvill is
-  configured (each one only if it is not applied yet; see `dependencies/patches/README.md`). The one patch adds a
-  Sleigh-based SPARC64 architecture to remill and fixes its Sleigh SPARC support:
+- **remill fork.** The submodule tracks [LLVMParty/remill](https://github.com/LLVMParty/remill), branch
+  `anvill-sparc-sleigh`: LLVMParty's `master` plus one commit that adds a Sleigh-based SPARC64 architecture and
+  fixes the Sleigh SPARC support. (It was first carried as a patch applied at configure time; the fork replaces
+  that.) What the commit does:
   - **Why.** remill replaced its hand-written SPARC32 semantics with Ghidra's Sleigh specification (remill #681,
     arch name `sparc32_sleigh`). The old `sparc32` arch kept its decoder but lost its semantics, so every
     instruction became a `kSPARC32EmulateInstruction` hyper call. The hand-written SPARC64 semantics still exist
@@ -8064,7 +8065,7 @@ reimplementation that wants the original output must reproduce the "old" side of
 | 26a | Tail calls did not return the callee's result. | Fixed | `lifter/flow/tail_call` |
 | 26b | Declaration-only functions (no uses) are removed by GlobalDCE in `OptimizeModule`. | Open (documented) | `lifter/flow/declaration_only` |
 | 26c | A data pointer to its own variable stays an `inttoptr` constant. | Open (documented) | `lifter/data/pointers` |
-| 26d | SPARC32 lifts every instruction as an EmulateInstruction hyper call; SPARC64 `Arch::Build` aborts. (Cause: anvill used remill's old SPARC archs, whose semantics are gone.) | Fixed (Sleigh-based archs; remill patch for SPARC64, §16.6) | `lifter/arch/sparc32_*`, `lifter/arch/sparc64_*`, `AllocateSignatures/sparc64.ll` |
+| 26d | SPARC32 lifts every instruction as an EmulateInstruction hyper call; SPARC64 `Arch::Build` aborts. (Cause: anvill used remill's old SPARC archs, whose semantics are gone.) | Fixed (Sleigh-based archs; SPARC64 added in the LLVMParty remill fork, §16.6) | `lifter/arch/sparc32_*`, `lifter/arch/sparc64_*`, `AllocateSignatures/sparc64.ll` |
 | 26e | SPARC `call x; restore` (tail-call idiom) is treated as a call that returns to `pc + 8`. | Open (documented) | — |
 | | **Cross-reference folder (§12)** | | |
 | 27 | `ICmp ule` is `<`; clz/ctz/ctpop use 64-bit semantics (clz/ctz of 0 UB); oversized shifts are not invalid. | Fixed | `CrossReferenceFolderTest.cpp` |
