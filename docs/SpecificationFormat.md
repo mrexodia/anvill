@@ -1,5 +1,10 @@
 # Specification Format
 
+> **Outdated.** This page describes the old JSON format. Specifications are now
+> protobuf messages (`data_specifications/specification.proto`), in binary or
+> text format (`.textproto`/`.txtpb`). See section 5 of
+> `docs/ReimplementationReport.md` and the examples in `tests/golden/lifter`.
+
 Anvill encodes information in "specification" JSON documents. These documents encode
 low-level ABI information about functions and global variables. They are not meant
 to encode all information about a single binary. In fact, the design is geared toward

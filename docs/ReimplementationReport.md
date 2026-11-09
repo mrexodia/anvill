@@ -5,9 +5,9 @@ This report describes the repository at commit `9948d26` ("update link to empire
 Scope and method:
 
 - I read every C++ source and header under `include/`, `lib/` and `bin/`, the protobuf schema, the docs, the tests, the Python package, the build files and the CI scripts.
-- The `remill` git submodule is **not checked out** in this repository snapshot. Remill behaviour is described from how Anvill calls it, plus Remill's well-known public design. Where that matters it is marked.
-- Nothing was built or run. The IR examples are either copied from the test data under `tests/anvill_passes/data/` or constructed by hand from the code. Constructed examples are labelled *illustrative*.
-- **[QUIRK]** marks behaviour that differs from the real ABI or the docs, or that looks like a latent bug. A faithful clone needs to copy these to produce byte-identical output. A "better" clone would fix them. Section 17 collects them all.
+- **Revision.** The first version of this report described commit `9948d26` as is. Since then, on this branch, anvill was ported to current remill and LLVM 19/21 (§16.6), and **most bugs listed in §17 were fixed**. The text describes the fixed code; each fix is marked **Fixed** with a description of the old behaviour, so a reimplementation can reproduce either. §17 has the full status table.
+- **Real IR.** The IR examples are now actual output of the built tools, taken from the golden test suite in `tests/golden` (§16.7). That suite is the executable specification: every pass and lifting situation has input files and the exact expected output, and `ctest` checks them. The only schematic IR left is marked as such (the pre-inlining form of a lifted function in §10.10, which the tools never print).
+- **[QUIRK]** marks behaviour that differs from the real ABI or the docs, or that looks like a latent bug, and that is still present. A faithful clone needs to copy these to produce identical output.
 
 ---
 
@@ -246,7 +246,7 @@ message Specification {
 
   0 = unspecified, which is rejected. These map one-to-one to `remill::kArchX86` … `kArchSparc64`. `AARCH64` maps to `kArchAArch64LittleEndian` and `AARCH32` to `kArchAArch32LittleEndian`.
 - `OS`: 1 LINUX, 2 MACOS, 3 WINDOWS, 4 SOLARIS. 0 is rejected.
-- `CallingConvention`: the values are **LLVM `CallingConv::ID` numbers**: 0 unspecified/C, 1 CDECL (*note: 1 is **not** a defined LLVM calling convention; LLVM's C is 0 and fastcc is 8*, **[QUIRK]**), 64 STDCALL, 65 FASTCALL, 70 THISCALL, 78 AMD64_SYSV, 79 WIN64, 80 VECTORCALL. The value is copied verbatim into `llvm::Function::setCallingConv`.
+- `CallingConvention`: the values are **LLVM `CallingConv::ID` numbers**: 0 unspecified/C, 1 CDECL, 64 STDCALL, 65 FASTCALL, 70 THISCALL, 78 AMD64_SYSV, 79 WIN64, 80 VECTORCALL. The value is copied into `llvm::Function::setCallingConv`, except that **CDECL (1) maps to C (0)**: 1 is not an LLVM calling convention ID (LLVM's C is 0 and fastcc is 8). (**Fixed:** the value used to be copied verbatim, declaring functions `cc 1`; `lifter/spec/cdecl_calling_convention`.) WIN64 and VECTORCALL have no allocator (§8).
 - `FunctionLinkage`:
   - 0 NORMAL: lift the body.
   - 1 DECL: declare only, `lift_as_decl=true`.
@@ -322,16 +322,18 @@ message ControlFlowOverrides { repeated Jump jumps = 1; repeated Call calls = 2;
 
 These requirements are not written down anywhere else.
 
-| Remill flow at instruction `pc` | Override required at `pc` | Otherwise |
+| Remill flow at instruction `pc` | Overrides used at `pc` | Without an override (or with an override of another kind, which is logged and ignored) |
 |---|---|---|
-| Normal / NoOp | none, or `Other`. `Other.stop=true` ends the block with `__remill_error` | other kinds → `LOG(ERROR)`, ignored |
-| DirectJump | **`Jump` with exactly 1 target, equal to the decoded target**, or a `Call` (tail call) | **`LOG(FATAL)`** |
-| IndirectJump | `Jump` (0 targets → `__remill_jump`; 1 → `br`; N → switch), `Call` (tail call), or `Return` | **`LOG(FATAL)`** |
-| Direct / indirect call | **`Call`** (looked up by `CallFunction`) | **`LOG(FATAL)` "Invalid spec for call"** |
+| Normal / NoOp | `Other`. `Other.stop=true` ends the block with `__remill_error` (`lifter/flow/stop_override`) | the instruction falls through |
+| DirectJump | `Jump` with exactly 1 target, equal to the decoded target (else `LOG(FATAL)`/`CHECK`), or `Call` (tail call, `lifter/flow/tail_call`) | `br` to the decoded target (`lifter/flow/direct_jump_no_override`) |
+| IndirectJump | `Jump` (0 targets → `__remill_jump`; 1 → `br`; N → switch, `lifter/flow/jump_table`), `Call` (tail call), or `Return` | a terminating tail call to `__remill_jump` (`lifter/flow/indirect_jump_unknown`) |
+| Direct / indirect call | `Call` (looked up by `CallFunction`; `target_address` redirects) | a call with no redirection; the prototype comes from the callee's declaration or a call site (`lifter/flow/direct_call`, `indirect_call_callsite`), else `__remill_function_call` (`call_without_prototype`) |
 | FunctionReturn | not consulted | — |
 | Conditional | the taken branch is checked as above | — |
 
-So a producer must emit a `Jump` record for **every** direct jump, a `Call` record for every call, and so on.
+**Fixed:** the three "Otherwise" cases for jumps and calls used to be `LOG(FATAL)` (including "Invalid spec for
+call"), so a producer had to emit a `Jump` record for every direct jump and a `Call` record for every call. Overrides
+are now only needed where the default is wrong.
 
 `Call.target_address` redirects the call. It is used for thunks: the callee's prototype is looked up at the redirected address and the call goes there. `Call.return_address`, `Call.is_tailcall` and `Call.stop` are parsed but **not read by the lifter** in this revision.
 
@@ -348,13 +350,11 @@ So a producer must emit a `Jump` record for **every** direct jump, a `Call` reco
    - `return_address`: decoded with type `uint<address_size>`. If absent, `return_address.type = void`, meaning there is no return address.
    - `return_stack_pointer.reg` is **required** (otherwise the error "Non-present or non-object 'return_stack_pointer'"). The offset defaults to 0.
    - `return`: **one** TypeSpec applied to **every** `Value` in `return.values`. With N values, you get N `ValueDecl`s of the same type.
-   - **`return.type` is always decoded, even when there are no return values.** `DecodeType(function.return_().type())` runs before the values are examined, and an absent `return` or `return.type` is an unset proto3 oneof, which fails with "Unknown/invalid data type". The function or call site is then skipped with a warning. **[QUIRK]** A void-returning prototype must therefore still carry a type and no values:
-
-     ```textproto
-     return { type { base: BT_VOID } }      # no `values` → void return
-     ```
-
-     The same applies to `Callsite.callable` and to the `--default_callable_spec` file (§14).
+   - **Void returns.** An absent `return`, or a `return` without values, means a void return; `return.type` is only
+     decoded when there are values. (**Fixed:** `return.type` used to be decoded unconditionally, so an absent
+     `return` failed with "Unknown/invalid data type" and the function or call site was silently skipped; producers
+     had to send `return { type { base: BT_VOID } }`. That form is still accepted. `lifter/spec/void_return`.) The
+     same applies to `Callsite.callable` and to the `--default_callable_spec` file (§14).
    - The LLVM type is `FunctionType(ret, [param types], is_variadic)`. `ret` is `void` for 0 returns, the single return type for 1, and otherwise a **literal non-packed** `StructType::get(ctx, {types})`.
 
 Example: a protobuf text-format function for `int main(int argc, char **argv)` on amd64 Linux.
@@ -379,7 +379,7 @@ overrides { returns { address: 0x401133 } }
 symbols { name: "main" address: 0x401130 }
 ```
 
-In principle you could instead set `callable.type { function { return_type { base: BT_I32 } arguments {...} arguments {...} } }` and let the SysV allocator place the arguments in EDI and RSI. In this revision that path is broken by the `DecodeType` bug described at the end of §6, so use explicit locations.
+You can instead set `callable.type { function { return_type { base: BT_I32 } arguments {...} arguments {...} } }` and let the allocator place the arguments (EDI and RSI here). (**Fixed:** that path used to be broken by the `DecodeType` bug described at the end of §6.) See `tests/golden/lifter/spec/callable_type.textproto` and the multi-architecture cases in `tests/golden/lifter/arch/`.
 
 ### 5.5 Type alias table
 
@@ -406,13 +406,13 @@ global_variables { address: 0x404000 type { alias: 1 } }
    - `DecodeTypeMap(type_aliases)`. A failure is a warning.
    - **functions**: each is decoded (§5.4). A failure is a warning and the function is skipped. A duplicate `entry_address` is a **hard error**. The result is stored in `functions` (sorted by address) and `address_to_function`.
    - **callsites**: decoded the same way. The key is `(inside_function_address, call_address)`. A duplicate is a hard error. Stored in `call_sites` (sorted) and `loc_to_call_site`.
-   - **global_variables**: decoded with `DecodeGlobalVar`. The type must decode, must not be a function type, must not be void, and must be sized. Stored in `variables` (sorted) and `address_to_var`. **[QUIRK]** On a decode failure the error is recorded but there is **no `continue`**, so `maybe_var.Value()` is then called on a failed `Result` and throws `std::logic_error`. **[QUIRK]** The duplicate check looks in `address_to_function`, not `address_to_var`.
+   - **global_variables**: decoded with `DecodeGlobalVar`. The type must decode, must not be a function type, must not be void, and must be sized. Stored in `variables` (sorted) and `address_to_var`. A variable that fails to decode is skipped with a warning. (**Fixed:** there was no `continue` after a decode failure, so `maybe_var.Value()` was called on a failed `Result` and threw `std::logic_error`; `lifter/spec/global_variables`.) A duplicate variable address is a hard error. (**Fixed:** the duplicate check looked in `address_to_function`, not `address_to_var`.)
    - **symbols**: an empty name is a hard error. Stored in `multimap<uint64, string>`.
    - **memory_ranges**: expanded **byte by byte** into `std::map<uint64, pair<uint8, BytePermission>>`. The permission is `R`, `RW`, `RX` or `RWX` from the two flags. An overlapping byte is a hard error ("was previously mapped").
-   - **overrides**: if absent, hard error "Spec has no control flow overrides". Each jump, call, return and other is stored in a sorted vector *and* in `unordered_map<uint64, ControlFlowOverride> control_flow_overrides`. A duplicate address across kinds is a `CHECK` failure. Jump targets are sorted by address.
+   - **overrides**: optional (**fixed:** an absent `overrides` used to be the hard error "Spec has no control flow overrides"). Each jump, call, return and other is stored in a sorted vector *and* in `unordered_map<uint64, ControlFlowOverride> control_flow_overrides`. A duplicate address across kinds is the error "Multiple control-flow overrides for address …" (**fixed:** it was a `CHECK` failure that aborted the process; `lifter/spec/duplicate_override`). Jump targets are sorted by address.
 4. `Specification` is a cheap handle (`shared_ptr<SpecificationImpl>`).
-   - Accessors: `FunctionAt`, `VariableAt`, `VariableContaining` (**[QUIRK]** exact-address lookup only, the same as `VariableAt` without the check), and `ForEach{Symbol,Function,Variable,CallSite,ControlFlowRedirect,Jump,Call,Return,MiscOverride}`.
-   - **[QUIRK]** `operator!=` returns `impl == that.impl`.
+   - Accessors: `FunctionAt`, `VariableAt`, `VariableContaining` (finds the variable whose `[address, address + size)` contains the address; **fixed:** it used to match exact start addresses only), and `ForEach{Symbol,Function,Variable,CallSite,ControlFlowRedirect,Jump,Call,Return,MiscOverride}`.
+   - `operator!=` returns `impl != that.impl` (**fixed:** it returned `impl == that.impl`).
    - `redirections` is never populated.
 
 Protobuf type decoding (`ProtobufTranslator::DecodeType`):
@@ -424,7 +424,7 @@ Protobuf type decoding (`ProtobufTranslator::DecodeType`):
 - struct → members
 - alias → `type_map.at(id)`
 
-**[QUIRK]** The one-argument overload builds a `FunctionType` for `has_function()` but falls through without returning it, so it ends in "Unknown/invalid data type". The two-argument (alias-map) overload delegates to the one-argument one for anything it does not handle itself. In practice **every function-typed TypeSpec fails to decode**, whether it appears directly or via an alias. `ParseIntoCallableDecl` decodes `callable.type` with the one-argument overload, so any function or call site that uses `callable.type` is rejected with a warning and skipped. Working prototypes in this revision therefore come from `parameters`/`return`. The `FunctionDecl::Create` allocator path is still exercised by `ValueLifter` (§11.3) for hinted function types.
+The one-argument overload builds a `FunctionType` for `has_function()` and returns it. (**Fixed:** it used to fall through without returning, ending in "Unknown/invalid data type", so **every function-typed TypeSpec failed to decode**, directly or via an alias, and every function or call site using `callable.type` was skipped with a warning.) The two-argument (alias-map) overload delegates to the one-argument one for anything it does not handle itself. Both prototype styles now work: `parameters`/`return`, or `callable.type` with the allocator of §8.
 
 ---
 
@@ -636,7 +636,7 @@ In the spec, call sites are keyed by `(function_address, address)` (`loc_to_call
 - Protobuf path, for context: if the spec function has a `type`, it is decoded to an LLVM FunctionType; a dummy `llvm::Function` is created in a fresh module prepared with `arch->PrepareModule` (cc and noreturn copied) and run through `FunctionDecl::Create`. Otherwise the params/returns/RA/return-SP come straight from the spec, and `decl.type = FunctionType(ret, params, variadic)` with `ret` = void, the single return type, or `StructType::get(ctx, ret_types, false)` (a *literal, non-packed* struct) for several returns.
 
 ### 8.4 ABI type override (applied after CC allocation)
-- `OverrideFunctionTypeWithABIReturnLayout()`: 0 returns → keep the type unchanged (an LLVM `void` stays void, and an sret'ed `void` already has a 1-element `returns`). 1 return → `FunctionType(returns[0].type, old params, vararg)`. N>1 → `StructType::create(elems)`, an *identified, unnamed* struct (prints as `%0`, `%1`, …), used as the return type.
+- `OverrideFunctionTypeWithABIReturnLayout()`: 0 returns → the return type becomes `void`. (**Fixed:** the type used to be kept unchanged, so a result passed through memory with no return register, e.g. AArch64's X8 buffer, left a non-void native function with nowhere to read its value from.) 1 return → `FunctionType(returns[0].type, old params, vararg)`. N>1 → `StructType::create(elems)`, an *identified, unnamed* struct (prints as `%0`, `%1`, …), used as the return type.
 - `OverrideFunctionTypeWithABIParamLayout()`: `FunctionType(old ret, [p.type for p in params], vararg)`. Struct params split across registers therefore become several scalar params, and an injected sret becomes an extra leading param.
 - Example (x86 cdecl `long long f(int)`): `returns=[EAX:i32, EDX:i32]` → `decl.type = %0 (i32)`, `%0 = type {i32, i32}`.
 
@@ -655,20 +655,24 @@ Signature: `Value *CallFromLiftedBlock(Value *target, const TypeDictionary &type
 
 Callers: `FunctionLifter::TryCallNativeFunction` (direct call to a declared/lifted function; loads mem_ptr from `MEMORY`, calls this, stores the result back) and the call-through-PC path (`dest_func = BitOrPointerCast(pc, ptr)`, indirect).
 
-Illustrative IR (amd64 SysV, `long f(int a, char *b)`, direct; State GEPs abbreviated):
+Real IR: in `tests/golden/lifter/flow/direct_call.lifted.ll` (`int f(int a) { return g(a * 3) + a; }`, with `g`
+declared `i32 (i32)` in EDI/EAX), after the lifter's local cleanup has inlined the semantics and promoted the
+State, the thunk for `call g` is:
+
 ```llvm
-%rsp.0   = load i64, ptr %RSP_ptr                     ; return_stack_pointer base
-%sp_exit = add i64 %rsp.0, 8
-%rsp.1   = load i64, ptr %RSP_ptr                     ; return_address = [RSP+0]
-%ra      = call i64 @__remill_read_memory_64(ptr %mem, i64 %rsp.1)
-%a       = load i32, ptr %EDI_ptr                     ; reg type == decl type → as is
-%rsi     = load i64, ptr %RSI_ptr
-%b       = inttoptr i64 %rsi to ptr                   ; AdaptToType(i64 → ptr)
-%r       = call i64 @f(i32 %a, ptr %b)
-store i64 %r, ptr %RAX_ptr                            ; StoreNativeValue
-store i64 %ra, ptr %NEXT_PC
-store i64 %sp_exit, ptr %RSP_ptr
+  %26 = call noundef ptr @__remill_write_memory_64(ptr noundef %16, i64 noundef add (i64 sub (i64 add (i64 ptrtoint (ptr @__anvill_sp to i64), i64 -8), i64 16), i64 -8), i64 noundef add (i64 ptrtoint (ptr @__anvill_pc to i64), i64 4198419)) #2, !pc !4
+  %27 = call i64 @__remill_read_memory_64(ptr %26, i64 add (i64 sub (i64 add (i64 ptrtoint (ptr @__anvill_sp to i64), i64 -8), i64 16), i64 -8)), !pc !4
+  %28 = trunc i64 %18 to i32
+  %29 = call i32 inttoptr (i64 add (i64 ptrtoint (ptr @__anvill_pc to i64), i64 4202496) to ptr)(i32 %28) #3, !pc !4
+  %30 = call noundef i32 @__remill_read_memory_32(ptr noundef %26, i64 noundef sub (i64 add (i64 ptrtoint (ptr @__anvill_sp to i64), i64 -8), i64 4)) #2, !pc !5
 ```
+
+`%26` pushes the return address (`0x401013`, PC-relative), `%27` reloads it from `[RSP]` (the `return_address`
+location), `%28` is the argument read from EDI (the low half of the 64-bit product), and `%29` is the native call
+(indirect through the PC-tainted address of `g` until `ConvertAddressesToEntityUses` turns it into `@g`). The
+`EAX` store of `%29` and the `RSP + 8` update were folded into later uses. The optimized form is in
+`direct_call.optimized.ll`.
+
 For an `i32` return in `RAX:i32`: `store i64 0, RAX` then `store (zext i32 %r to i64), RAX`. For `double` in `XMM0` (a vector-ish remill type): store zero to the whole register, then, because AdaptToType returns null, store the double directly through the register pointer.
 
 
@@ -702,7 +706,7 @@ Helper functions:
 - `ApplyX86Ext(constraints, arch_name)`: for every RegisterConstraint with exactly one variant whose name starts with `"XMM"`: parse N (`XMM0`..`XMM15`) and replace by
   - AVX (`kArchX86_AVX`/`kArchAMD64_AVX`): `{XMMn: kTypeFloatOrVec, kMaxBit128}, {YMMn: kTypeFloatOrVec, kMaxBit256}`
   - AVX512: `{XMMn,128},{YMMn,256},{ZMMn: kTypeFloatOrVec, kMaxBit512}`
-  - otherwise unchanged. **[QUIRK]** The replacement always uses `kTypeFloatOrVec`, even if the original XMM entry was `kTypeVec` (affects return-register tables: under AVX a `double` struct member *can* go to XMM0, under plain AMD64 it can't — see §8.11 example).
+  - otherwise unchanged. The replacement always uses `kTypeFloatOrVec`, even if the original XMM entry was `kTypeVec`. (This used to change SysV aggregate returns between plain AMD64 and AVX; aggregates are now classified by `ClassifyEightbytes`, which does not use these entries, so both give the same result. See §8.11.)
 - `SelectX86Constraint(arch_name, basic, avx, avx512)`: `kArchX86`/`kArchAMD64` → basic; `*_AVX` → avx; anything else → avx512.
 
 ### 8.7 CallingConvention interface
@@ -767,12 +771,15 @@ Every concrete `AllocateSignature(fdecl, func)` does: `BindReturnValues(func, in
 | id | IsX86 | IsAMD64 | IsAArch64 | IsSPARC32 | IsSPARC64 |
 |---|---|---|---|---|---|
 | C | X86_C | X86_64_SysV | AArch64_C | SPARC32_C | SPARC64_C |
-| X86_StdCall | X86_StdCall | X86_C ("ignored on AMD64") **[QUIRK: returns the 32-bit cdecl object on amd64]** | – | – | – |
-| X86_FastCall | X86_FastCall | X86_C **[QUIRK]** | | | |
-| X86_ThisCall | X86_ThisCall | X86_C **[QUIRK]** | | | |
+| X86_StdCall | X86_StdCall | X86_64_SysV (ignored on AMD64, as by compilers) | – | – | – |
+| X86_FastCall | X86_FastCall | X86_64_SysV | | | |
+| X86_ThisCall | X86_ThisCall | X86_64_SysV | | | |
 | X86_64_SysV | – | X86_64_SysV | | | |
 | else / no match | error `"Unsupported calling convention ID: <n>"` |
-(AArch32 is not reachable via the ID path.)
+
+The `C` row also maps AArch32 to AArch32_C. (**Fixed:** stdcall/fastcall/thiscall on AMD64 used to return the 32-bit
+cdecl object, with ESP-relative 4-byte slots; AArch32 was not reachable through the ID path.) There is still no
+Win64 or vectorcall allocator, so AMD64 Windows is an error.
 
 ### 8.9 AllocationState (lib/Arch/AllocationState.{h,cpp}) — the register allocator
 
@@ -825,9 +832,9 @@ Size helpers:
 `TryCompositeRegisterAllocate(type)`:
 - Struct: for each element in order: save `prev_pack`, set `config.can_pack_multiple_values_together = true`, `TryRegisterAllocate(elem)`; restore; on None → return None. Concatenate results. **Element offsets/padding are ignored**.
 - Array: same, element type repeated `getNumElements()` times.
-- FixedVector: `TryVectorRegisterAllocate(vec)`; **[QUIRK]** if that returns None, the composite still returns the (empty) vector `ret` — i.e. *success with zero locations*.
+- FixedVector: `TryVectorRegisterAllocate(vec)`; if that returns None, so does the composite. (**Fixed:** it returned the empty `ret`, i.e. *success with zero locations*.)
 - else LOG(FATAL).
-- **[QUIRK] No rollback**: if a composite fails midway, the `fill`/`reserved` state already consumed by earlier members stays consumed. E.g. a SysV struct of 7×i64 eats RDI..R9, fails on the 7th, goes to the stack, and any later integer params also land on the stack.
+- Rollback: `TryRegisterAllocate` restores `fill`/`reserved` when a composite fails midway. (**Fixed:** the state consumed by earlier members stayed consumed, so a SysV struct of 7×i64 ate RDI..R9, failed on the 7th, went to the stack, and later integer params landed on the stack too.)
 
 `TryBasicRegisterAllocate(type, hint)`:
 ```
@@ -852,13 +859,15 @@ return None
 ```
 Consequences:
 - First-fit in table order. Type classes are filtered by `tc & st.tc`.
-- Packing (only inside composites/vectors) stacks values in one register by bit count; **[QUIRK]** the second value's ValueDecl names the *wider* variant (e.g. `{i32,i32}` → `EDI:i32`, then `RDI:i32`) and there is no notion of bit offset inside the register, so loading the 2nd member reads the *low* bits again. Params are not coalesced (only returns call `CoalescePacking`).
-- No alignment rules at all (no even-register pairs on ARM, no slot skipping on SPARC64, no "struct >16 bytes → memory" SysV rule).
+- Packing (only inside composites/vectors) stacks values in one register by bit count; the second value's ValueDecl names the *wider* variant (e.g. `{i32,i32}` → `EDI:i32`, then `RDI:i32`) and there is no notion of bit offset inside the register, so loading the 2nd member reads the *low* bits again. Params are not coalesced (only returns call `CoalescePacking`). **This is why the allocators of SysV x86-64, AArch64, AArch32 and SPARC32 no longer use AllocationState for aggregates** (§8.10): they classify aggregates themselves. AllocationState is still used for scalars and vectors on SysV, by the x86-32 return paths and by SPARC64.
+- AllocationState itself has no alignment rules (no even-register pairs, no slot skipping); the per-convention code adds them where it bypasses AllocationState.
+- **Rollback (fixed).** `TryRegisterAllocate` of a struct, array or vector now saves `reserved`/`fill` and restores them when the composite does not fit. Previously the registers taken by the members that did fit stayed reserved, so later arguments skipped them (a 7-`i64` struct on SysV took RDI–R9 and pushed the next `int` to the stack).
 
 `TryVectorRegisterAllocate(vec)`: for each of the `N` elements:
-- element must be integer, else LOG(FATAL) `"Unhandled vector type"` (**[QUIRK]** float vectors crash).
+- floating-point element: the whole vector is allocated as **one** value with `SizeAndType(size of the vector, kTypeFloatOrVec)` (e.g. `<4 x float>` → XMM0, `<8 x float>` → YMM0 with AVX). (**Fixed:** this was `LOG(FATAL) "Unhandled vector type"`.)
+- other non-integer element: `LOG(FATAL) "Unhandled vector type"`.
 - if `conv->ID() == CallingConv::X86_64_SysV`: `ProcessIntVecX86_64SysV(elem, N, bitwidth)` per element; else pack (`can_pack=true`) `TryRegisterAllocate(elem)`.
-- any failure → None; returns None also if result empty.
+- any failure → None; returns None also if the result is empty. (**Fixed:** a failed vector allocation used to "succeed" with zero locations.)
 
 `ProcessIntVecX86_64SysV(elem, vec_size, bw)` — per element (called vec_size times):
 - bw 64: size 3 → no-pack `TryRegisterAllocate(elem)` (→ RAX, RDX, RCX); size 2,4 → hint `{AssignSizeAndType(elem).sc, kTypeFloatOrVec}` with packing → XMM regs.
@@ -873,124 +882,1045 @@ Reference table in source comment (returning int vectors): `<2 x iN>` → xmm0; 
 2. for each bucket in constraint order: empty → skip; 1 element → copy as is; ≥2 → `st = llvm::StructType::create(*arch->context, types)` (identified, unnamed, non-packed), `size = DataLayout.getTypeAllocSizeInBits(st)`, reg = `GetSmallestVariantName(variants, size)` (error `"Could not find register variant to fit size %u"`), emit `{reg, st}`.
 Note the output order is by register table order, not by member order.
 
-### 8.10 Per-convention tables & rules
+### 8.10 Per-convention rules
 
-Common BindParameters loop (SysV, AArch32, AArch64, SPARC32, SPARC64):
-```
-names = TryRecoverParamNames(func); dl = DataLayout(func.getParent())
-alloc = AllocationState(param_constraints, arch, this); [alloc.config.type_splitter = IntegerTypeSplitter]
-stack_offset = <CC constant>
-for arg in func.args():
-   if (a = alloc.TryRegisterAllocate(arg.type)):
-       prev = params.size()
-       for v in *a: params.push({type=v.type, reg=v.reg} or {mem_reg, mem_offset})
-       if exactly one pushed: params[prev].name = name (if non-empty)
-       else: params[prev+i].name = name + to_string(i)       // "x0","x1",...
-   else:
-       params.push({type=arg.type, mem_reg=SP, mem_offset=stack_offset, name})
-       stack_offset += dl.getTypeAllocSize(arg.type)     // [QUIRK] no rounding to slot size/alignment
-```
-Every `BindReturnValues` starts with: if `func.hasStructRetAttr()`: returns = `[{reg=<sret reg>, type=ptr}]` and error if the IR return type is not void (`"Function '%s' with sret-attributed parameter has non-void return type '%s'"`). The sret *parameter* itself is then allocated like any other pointer parameter.
+Every `BindReturnValues` starts with the explicit-`sret` case: if `func.hasStructRetAttr()` and the IR return type
+is not void, error `"Function '%s' with sret-attributed parameter has non-void return type '%s'"`. What the
+`sret` pointer becomes is per convention (below).
+
+When a result must go through memory ("RVO", `injected_sret = true`), `BindParameters` adds a hidden first
+parameter named `__struct_ret_ptr` **typed `ptr`** (never the aggregate type; **fixed** on every convention, where it
+used to be typed as the returned aggregate, and on x86-32 that also shifted every later stack argument by the
+aggregate's size).
+
+Stack slots are always rounded: to 8 bytes on x86-64 SysV and AArch64, to 4 bytes on x86-32, AArch32 and SPARC32.
+(**Fixed:** every convention used to advance the stack offset by the argument's exact allocation size, so two
+stack `int`s on x86-64 were at `[RSP+8]` and `[RSP+12]`.)
+
+The golden cases in §8.11 show the output of every rule below.
 
 #### X86_64_SysV (X86_64_SysV.cpp), id 78
-Param pool (basic): `[DIL/DI/EDI/RDI]`, `[SIL/SI/ESI/RSI]`, `[DL/DX/EDX/RDX]`, `[CL/CX/ECX/RCX]`, `[R8B/R8W/R8D/R8]`, `[R9B/R9W/R9D/R9]` (all kTypeIntegral, kMaxBit8/16/32/64), then `XMM0..XMM7` (kTypeFloatOrVec, kMaxBit128). AVX/AVX512 variants via ApplyX86Ext.
-Return pool (used for composites and >192-bit ints): `[AL/AX/EAX/RAX]`, `[DL/DX/EDX/RDX]`, `[CL/CX/ECX/RCX]` (integral), `XMM0`, `XMM1` (**kTypeVec only**), `ST0`, `ST1` (kTypeVec, kMaxBit80).
-BindReturnValues by IR return type:
-- void → none. iN: N≤64 → `RAX:iN`; ≤128 → `RAX:i64, RDX:i64`; ≤192 → `RAX,RDX,RCX` each i64; else AllocationState on return pool (basically always fails for ints → error `"Could not allocate integral type ..."`).
-- ptr → `RAX`. float/double → `XMM0`. x86_mmx → `MM0`. x86_fp80 → `ST0`.
-- vector/array/struct → `TryRegisterAllocate` on return pool; success → `CoalescePacking`; failure → **RVO**: `injected_sret=true`, returns=`[RAX:ptr]`.
-- else (half, fp128, …) → error `"Could not allocate unsupported type ..."`.
-BindParameters: stack_offset starts at **8** (`[rsp+8]`, return addr at `[rsp]`), mem_reg `RSP`. If `injected_sret`: first push `{name="__struct_ret_ptr", type=func.getReturnType() (the struct type itself, not ptr!), reg=RAX}` and `reserved[0]=true` (blocks RDI). **[QUIRK]** real ABI passes the hidden pointer in RDI; anvill says RAX and types it as the struct.
-Epilogue: `return_stack_pointer = RSP`, `offset = 8`; `return_address = {mem_reg=RSP, mem_offset=0, type=RSP->type}`.
-**[QUIRK]** i128 params: no type_splitter on SysV → stack. `<4 x float>` params → LOG(FATAL).
 
-#### X86_C (cdecl, X86_C.cpp), id 0
-Param pool `XMM0..XMM7` (kTypeVec) exists but **BindParameters never uses it**: every param goes on the stack.
-Return pool: `[AL/AX/EAX]`, `[DL/DX/EDX]`, `[CL/CX/ECX]` (integral, max 32), `ST0`, `ST1` (kTypeVec, 80).
-BindReturnValues: iN ≤32 → `EAX:iN`; ≤64 → `EAX:i32, EDX:i32`; ≤96 → `EAX,EDX,ECX` i32; else pool; ptr → EAX; **float/double/x86_fp80 → ST0**; mmx → MM0; composites → pool+Coalesce, else RVO `injected_sret`, returns `[EAX:ptr]`.
-BindParameters: `stack_offset = 4`, mem_reg `ESP`. If injected_sret: push `{type=func.getReturnType() (struct type), mem=[ESP+4]}`, `stack_offset += allocsize(struct)` **[QUIRK: should be +4 for a pointer]**, no name. Then each arg: `[ESP+stack_offset]`, `stack_offset += allocsize(arg)`, `name = names[argno]`.
-Epilogue: `return_stack_pointer=ESP`; offset **8** if `func.hasParamAttribute(0, StructRet) || injected_sret` (callee does `ret 4`), else **4**. `return_address = [ESP+0]`.
+Implements the System V AMD64 psABI, section 3.2.3.
 
-#### X86_StdCall (id 64) / X86_FastCall (id 65) / X86_ThisCall (id 70)
-Source-identical to X86_C except:
-- `BindParameters` returns `llvm::ErrorOr<unsigned>` = final `stack_offset`, and `return_stack_pointer_offset = stack_offset` (callee pops args: `ESP_exit = ESP_entry + 4 + Σ allocsize(args)`). StdCall: `= 4` default then overwritten with the value; Fast/ThisCall: `remill::GetReference(maybe_rspo)`.
-- no sret special case for the RSP offset (it is included via stack_offset).
-- FastCall's param pool prepends `ECX`, `EDX` (kTypeIntegral, kMaxBit32); ThisCall prepends `ECX`. **[QUIRK] These pools are never consulted** — BindParameters is the stack-only loop, so `this`/fastcall register args are modelled as stack args.
+Scalars and vectors use AllocationState with the parameter pool `[DIL/DI/EDI/RDI]`, `[SIL/SI/ESI/RSI]`,
+`[DL/DX/EDX/RDX]`, `[CL/CX/ECX/RCX]`, `[R8B/R8W/R8D/R8]`, `[R9B/R9W/R9D/R9]` (kTypeIntegral), then `XMM0..XMM7`
+(kTypeFloatOrVec, kMaxBit128; with AVX/AVX512 each gains a YMM/ZMM variant through `ApplyX86Ext`, so 256-bit
+vectors use `YMM<n>`). `x86_fp80` and `fp128` arguments are never put in registers (class X87/MEMORY).
+
+**Aggregates and 65–128-bit integers** are classified eightbyte by eightbyte (`ClassifyEightbytes`):
+
+1. If the allocation size is > 16 bytes → MEMORY.
+2. Flatten to scalar leaves with their byte offsets (structs by `StructLayout`, arrays by element size). An
+   `i65..i128` is two `i64` leaves. A leaf that is `x86_fp80`, `fp128`, a vector, or an integer wider than 128
+   bits → MEMORY.
+3. For each eightbyte that contains leaves: INTEGER if any leaf is an integer or pointer, else SSE. Fully padded
+   eightbytes are dropped.
+4. The transfer type of an INTEGER eightbyte is the pointer itself if it is a single pointer, else the smallest of
+   `i8/i16/i32/i64` covering the bytes used (`{i32, i32}` → one `i64`; `{i8, i8}` → `i16`; `{i32, float}` → `i64`).
+   An SSE eightbyte is `float` (one float), `<2 x float>` (two floats) or `double`.
+5. `AssignEightbytes` gives each eightbyte the next free GPR (INTEGER) or XMM register (SSE), in pool order. If any
+   eightbyte does not get a register, **none** do and the value goes to memory (the state is unchanged).
+
+Parameters: MEMORY-class or unassigned values go on the stack. Stack offsets start at 8 (`[RSP+8]`; the return
+address is at `[RSP]`), each argument takes a multiple of 8 bytes, and an argument whose alignment is 16
+(`long double`, `__int128`, 16-byte-aligned types) starts at an offset with `offset % 16 == 8` (16-byte aligned
+in the caller's frame). A parameter split over several registers is named `<name>0`, `<name>1`, …
+
+Results:
+
+- void → none. `iN`, N ≤ 64 → `RAX:iN`; N ≤ 128 → `RAX:i64, RDX:i64`; wider → RVO (**changed:** 129–192-bit
+  integers used to be split over RAX, RDX, RCX, which is the LLVM-IR-level convention, not the C one).
+- `ptr` → `RAX`; `float`/`double` → `XMM0`; `x86_mmx` (LLVM < 20) → `MM0`; `x86_fp80` → `ST0`.
+- Aggregates: an aggregate whose only member (through single-member structs/arrays) is `x86_fp80` → `ST0`
+  (class X87). Otherwise classify as above and assign INTEGER eightbytes to RAX then RDX, SSE eightbytes to XMM0
+  then XMM1 (`{i64, double}` → `RAX:i64, XMM0:double`). MEMORY → RVO.
+- Vectors: AllocationState on the return pool (`RAX`, `RDX`, `RCX`, `XMM0`, `XMM1`, `ST0`, `ST1`) with the integer
+  vector table of §8.9, then `CoalescePacking`; failure → RVO.
+- RVO: `returns = [RAX:ptr]`, hidden parameter `__struct_ret_ptr: RDI : ptr` and RDI reserved. (**Fixed:** the
+  hidden parameter was put in RAX and typed as the aggregate while RDI was still reserved; aggregates up to the
+  register count were returned in RAX/RDX/RCX instead of going to memory above 16 bytes; and `{i64, double}`
+  went to RVO on plain AMD64 because XMM0/XMM1 in the return pool only accepted `kTypeVec`.)
+- An explicit `sret` parameter: `returns = [RAX:ptr]`; the parameter itself is allocated like any pointer (RDI).
+
+Epilogue: `return_stack_pointer = RSP + 8`; `return_address = [RSP + 0]` typed as RSP's type.
+
+#### X86_C (cdecl, X86_C.cpp), id 0; X86_StdCall (id 64), X86_FastCall (id 65), X86_ThisCall (id 70)
+
+Results (all four): `iN` N ≤ 32 → `EAX:iN`; ≤ 64 → `EAX:i32, EDX:i32`; ≤ 96 → `EAX, EDX, ECX` each i32; else the
+return pool. `ptr` → `EAX`; `float`/`double`/`x86_fp80` → `ST0`; `x86_mmx` → `MM0`. Aggregates and vectors use
+AllocationState on the return pool (`[AL/AX/EAX]`, `[DL/DX/EDX]`, `[CL/CX/ECX]`, `ST0`, `ST1`) with
+`CoalescePacking`; failure → RVO with `returns = [EAX:ptr]`. (So small aggregates are returned in registers, the
+MSVC convention; the i386 System V ABI returns every aggregate in memory. Not changed.)
+
+Parameters: stack offsets start at 4 (`[ESP+4]`); each argument takes a multiple of 4 bytes. A hidden RVO pointer
+is the first stack argument (`[ESP+4] : ptr`, 4 bytes).
+
+- **fastcall**: the first two arguments that are integers of at most 32 bits or pointers, left to right, go in ECX
+  then EDX (`CL`/`CX`/`ECX` by size); all others, including `i64`, go on the stack, and a later small integer
+  can still take a free register. A hidden RVO pointer is the first such argument (ECX).
+- **thiscall**: the first argument (`this`) goes in ECX if it is an integer of at most 32 bits or a pointer. A
+  hidden RVO pointer is the first *stack* argument.
+- (**Fixed:** the fastcall and thiscall register pools existed but were never consulted, so every argument was
+  taken from the stack.)
+
+Epilogue: `return_stack_pointer = ESP + n`, `return_address = [ESP + 0]`, where n is 4 for cdecl (8 with a
+hidden or explicit sret pointer: the i386 System V callee pops it with `ret 4`), and for stdcall, fastcall and
+thiscall 4 plus the bytes of all stack arguments (the callee pops them).
 
 #### AArch64_C (AArch64_C.cpp), id 0
-Param pool: `[W0/X0]..[W7/X7]` (integral, 32/64), `V0..V7` (**kTypeIntegral**, kMaxBit128) **[QUIRK: integer overflow after X7 goes to V0..V7]**, `[H0/S0/D0]..[H7/S7/D7]` (kTypeFloat, 16/32/64), `Q0..Q7` (kTypeFloat, 128).
-Return pool: `[Wn/Xn]` n=0..7, `[Hn/Sn/Dn]` n=0..7 (comment: "TODO(pag): Probably totally broken").
-`IntegerTypeSplitter`: iN with N>64 → `[ceil(N/64) x i64]`, else nullptr. Used for params and composite returns.
-BindReturnValues: logs `LOG(INFO) "Binding on return <type>"`. sret → `X8:ptr`. iN ≤64 → `X0:iN`; ≤512 → `X0..X(k-1)` with **type i32** each (k = ceil(N/64)) **[QUIRK: element type should be i64]**; >512 → `X8:ptr` (no injected param). ptr→X0, half→H0, float→S0, double→D0, fp128→Q0. composites → pool+splitter+Coalesce; failure → error (no RVO).
-BindParameters: `CHECK(!injected_sret)` (message mentions SPARC); stack_offset 0, mem_reg `SP`.
-Epilogue: `return_stack_pointer = SP`, offset 0; `return_address.reg = X30`, type = X30 type.
 
-#### AArch32_C (AArch32_C.cpp; AAPCS soft-float only), id 0
-Param pool `R0..R3` (integral, kMaxBit32). Return pool `R0..R3`.
-`IntegerTypeSplitter`: N>32 → `[ceil(N/32) x i32]`.
-BindReturnValues: sret → `R0:ptr`. iN ≤32 → `R0`; ≤64 → `R0,R1` i32; ≤128 → `R0..R3` i32 (count = ceil(N/32)); else `R0:ptr`. ptr/half/float → `R0`. double → `R0:double, R1:double` **[QUIRK: both typed double]**. fp128 → `R0:double, R1:double` (uses getDoubleTy, loop bounded at 2). composites → pool+Coalesce; failure → `R0:ptr` **but injected_sret is NOT set** so no hidden param is added **[QUIRK]**.
-BindParameters: stack 0 off `SP`. **[QUIRK]** float/double params can never match an integral R register (and `has_free_regs` stays false so no splitter) → always stack. i64 → splitter → R0,R1 (no even-pair alignment).
-Epilogue: `return_stack_pointer=SP`, offset 0, `return_address.reg = LR`.
+Implements the AAPCS64 directly, without AllocationState (`AssignAAPCS64`), tracking NGRN (next X register) and
+NSRN (next V register), both 0..8:
+
+- `half`/`bfloat`/`float`/`double`/`fp128` and 64- or 128-bit vectors → the next V register, named by size: `H<n>`
+  (16 bits), `S<n>` (32), `D<n>` (64), `Q<n>` (128).
+- A homogeneous floating-point aggregate (1–4 leaves, all the same floating-point type) → consecutive V registers,
+  one per member, if they all fit; otherwise it goes on the stack and NSRN becomes 8.
+- Integers of at most 64 bits and pointers → the next X register: `W<n>` for integers of at most 32 bits, `X<n>`
+  otherwise.
+- Other aggregates (and `i65..i128`) of at most 16 bytes → one or two X registers as `i64` chunks (the last chunk
+  narrowed to `i8/i16/i32` if shorter), starting at an even register when the type's alignment is 16 or it is a
+  wide integer. If they do not all fit, it goes on the stack and NGRN becomes 8.
+- Non-HFA aggregates larger than 16 bytes and integers wider than 128 bits are passed by reference (`ptr`).
+- An explicit `sret` parameter → X8.
+- Stack: offsets from `[SP]` (no return address on the stack), 8-byte slots, 16-byte aligned for 16-byte
+  aligned values.
+
+Results use the same assignment as the first argument (`i32` → `W0`, `i128` → `X0:i64, X1:i64`,
+`{i64, double}` → `X0:i64, X1:i64` since it is not an HFA, HFAs → `S0..S3`/`D0..D3`). Anything else (a larger
+aggregate, an integer wider than 128 bits) is returned through the buffer whose address the caller passes in
+X8: hidden parameter `__struct_ret_ptr: X8 : ptr` and **no** return value (the callee need not preserve X8), so
+the ABI function type returns `void`. An explicit `sret` likewise has no return value. `x86_fp80` is an error.
+
+(**Fixed:** the old pool listed V0–V7 as *integer* registers, so a ninth integer argument went to `V0`; `i128`
+went to `V0`; split integer results were typed `i32`; `sret` pointers went to X0 and X8 was declared as the return
+value; HFAs were not recognized; and aggregates that did not fit were an error.)
+
+Epilogue: `return_stack_pointer = SP + 0`; `return_address = X30`.
+
+#### AArch32_C (AArch32_C.cpp), id 0
+
+Implements the base (soft-float) AAPCS, as used by `arm-linux-gnueabi`, without AllocationState:
+
+- Every argument is a sequence of 4-byte words: a value of at most 4 bytes keeps its type (`float` stays
+  `float`, in a core register); each word of a larger value or of an aggregate is `i32`.
+- Words go in R0–R3 (NCRN), then on the stack (NSAA, offsets from `[SP]`). Values with 8-byte alignment (`i64`,
+  `double`, aggregates containing them) start at an even register and at an 8-byte aligned stack offset.
+- An argument that does not fit in the remaining registers is split between the last registers and the stack,
+  as long as nothing is on the stack yet; otherwise it goes entirely on the stack (kept whole, one declaration)
+  and NCRN becomes 4.
+- Results: aggregates of at most 4 bytes → `R0:i32`; non-aggregates of at most 8 bytes → `R0` or `R0:i32, R1:i32`
+  (`double` too); everything else → memory, with the address as the first argument (`__struct_ret_ptr: R0`,
+  shifting every argument by one register) and no return value. An explicit `sret` parameter is R0 and has no
+  return value. `x86_fp80`/`fp128` results are an error.
+
+(**Fixed:** `i64` arguments were not aligned to even registers; `float`/`double` arguments always went to the
+stack; a `double` result was `R0:double, R1:double`; and an aggregate result declared `R0:ptr` as the return value
+without a hidden parameter, so the first argument also claimed R0.)
+
+Epilogue: `return_stack_pointer = SP + 0`; `return_address = LR`.
 
 #### SPARC32_C (SPARC32_C.cpp), id 0
-Param pool `o0..o5` (**kTypeNumeric** — ints, ptrs and floats; kMaxBit32).
-Return pool `o0..o5` (integral 32), `f0..f3` (float 32), `d0`, `d2` (float 64).
-`IntegerTypeSplitter`: N>32 → `[ceil(N/32) x i32]`.
-BindReturnValues: sret → `o0:ptr`; iN ≤32 → `o0`; ≤192 → `o0..o5` i32 (ceil(N/32)); else error. ptr → o0; half/float → f0; double → d0; composites → pool+splitter+Coalesce; failure → error.
-BindParameters: `CHECK(!injected_sret)`; **stack_offset = 92** (`[%fp+92]` after `save`), mem_reg `o6`. **[QUIRK]** double param: 64 > 32 bits, splitter only for ints → stack (real ABI splits over two o regs).
-Epilogue: `return_stack_pointer=o6` off 0; `return_address.reg = o7`.
+
+Register names follow current remill: `O0`–`O7`, `SP`, `FS<n>`, `FD<n>` (they used to be lowercase `o0`, `f0`,
+`d0`, which no longer exist).
+
+Parameters follow the SPARC V8 ABI, without AllocationState: every argument is a sequence of 4-byte words, and the
+words of all arguments go in O0–O5, then on the stack at `[SP + 92]`, `[SP + 96]`, … (word k ≥ 6 is at
+`SP + 92 + 4·(k − 6)`). Floating-point arguments use the integer registers, and a `double` or `long long` may be
+split between O5 and the stack. Aggregates and `fp128` are passed by reference (`ptr`). A single-word value keeps
+its type; each word of a multi-word value is `i32`. An argument that starts on the stack is kept whole.
+
+Results: `iN` N ≤ 32 → `O0`; ≤ 192 → `O0..O5` as `i32` words; `ptr` → `O0`; `half`/`float` → `FS0`; `double` → `FD0`.
+Aggregates and `fp128` are returned in memory: the caller stores the address at `[SP + 64]` in its frame, the
+hidden parameter is `__struct_ret_ptr: [SP + 64] : ptr`, and the callee returns that address in `O0`. An explicit
+`sret` parameter is also `[SP + 64]`. Vectors still use AllocationState on the return pool.
+
+NOTE: such callees return to `O7 + 12` (skipping an `unimp` word holding the size), which is not modelled.
+
+(**Fixed:** `double` arguments went to the stack because no register accepted 64-bit floats; stack offsets used
+exact sizes; aggregate results were an error; and an injected sret hit `CHECK(!injected_sret)`.)
+
+Epilogue: `return_stack_pointer = SP + 0`; `return_address = O7`.
 
 #### SPARC64_C (SPARC64_C.cpp), id 0
-Param pool `o0..o5` (integral, kMaxBit64), `f1,f3,...,f31` (float 32), `d0,d2,...,d30` (float 64), `q0,q4,...,q28` (float 128).
-Return pool `o0..o5`, `f0..f31`, `d0..d30` even, `q0..q28` step 4.
-`IntegerTypeSplitter`: N>64 → `[ceil(N/64) x i64]`.
-BindReturnValues: sret → o0; iN ≤64 → o0; ≤384 → `o0..o5` **typed i32** (ceil(N/64)) **[QUIRK]**; else error. ptr→o0, half/float→f0, double→d0, fp128→q0; composites → pool+Coalesce else error.
-BindParameters: `CHECK(!injected_sret)`; **stack_offset = 2227** (experimentally found; 2047 bias + 176 + 4), mem_reg `o6`. No slot-based FP register assignment.
-Epilogue as SPARC32 (`o6`+0, ra in `o7`).
 
-### 8.11 Worked examples
+Unchanged apart from one fix, and **untestable end to end**: `remill::Arch::Build` for SPARC64 aborts in this
+remill version (§16.6, `lifter/spec/sparc64_unsupported`).
 
-Canonical C: `struct S {long a; double b;} f(int, float, char*);` Input to `FunctionDecl::Create` is an `llvm::Function`. Via the protobuf path the struct TypeSpec decodes to a *packed literal* struct (§7.4), so the IR signature is `<{iL, double}> (i32, float, ptr)` with `iL` = i64 on LP64 targets and i32 on ILP32 ones. Unnamed args → names `param0`, `param1`, `param2`.
+Param pool `o0..o5` (integral, kMaxBit64), `f1,f3,...,f31` (float 32), `d0,d2,...,d30` (float 64),
+`q0,q4,...,q28` (float 128). Return pool `o0..o5`, `f0..f31`, `d0..d30` even, `q0..q28` step 4.
+`IntegerTypeSplitter`: N > 64 → `[ceil(N/64) x i64]`.
+Results: `iN` ≤ 64 → `o0`; ≤ 384 → `o0..o5` typed **i64** (**fixed:** they were typed i32); else error. `ptr` → `o0`,
+`half`/`float` → `f0`, `double` → `d0`, `fp128` → `q0`; composites → pool + `CoalescePacking`, else error.
+Parameters: `CHECK(!injected_sret)`; stack offsets start at **2227** (2047 bias + 176 + 4, found experimentally),
+`mem_reg o6`; no slot-based FP register assignment (the real V9 ABI is slot-based).
+Epilogue: `return_stack_pointer = o6 + 0`; `return_address = o7`.
 
-**x86-64 SysV, plain `kArchAMD64`** — signature `<{i64,double}>(i32,float,ptr)`:
-- Return: composite on return pool → i64: RAX (fill 64 → reserved). double: tc Float; RDX/RCX integral, XMM0/XMM1/ST0/ST1 are kTypeVec → no match, `has_free_regs=false` → None ⇒ **RVO**: `returns=[RAX:ptr]`, `injected_sret=true`.
-- Params: `__struct_ret_ptr : <{i64,double}> @ RAX` (and slot 0/RDI blocked); `param0 : i32 @ ESI` (RSI slot, fill 32 → smallest variant ESI); `param1 : float @ XMM0`; `param2 : ptr @ RDX` (RSI is partly filled and packing is off outside composites, so it skips to RDX).
-- `return_stack_pointer = RSP + 8`; `return_address = [RSP+0] : i64`.
-- Final `decl.type` = `ptr (<{i64,double}>, i32, float, ptr)`.
-- Real ABI: RAX+XMM0 return, args EDI, XMM0, RSI. Anvill differs because of the kTypeVec return table and the sret handling.
+### 8.11 Worked examples (real allocator output)
 
-**x86-64 SysV, `kArchAMD64_AVX`** (XMM in the return table becomes FloatOrVec):
-- Return: RAX:i64, XMM0:double (fill 64 → smallest variant XMM0). `CoalescePacking` → `returns=[RAX:i64, XMM0:double]`.
-- Params: `param0:i32@EDI`, `param1:float@XMM0`, `param2:ptr@RSI`. RSP+8. Type `%0 (i32, float, ptr)` where `%0 = type {i64, double}` (identified struct from `StructType::create`).
-- This matches the real ABI.
+`anvill-opt --passes=AllocateSignatures` runs `FunctionDecl::Create` on every function of a module and prints,
+per function: the IR type and calling convention, the ABI function type (`abi type`, after §8.4's overrides), the
+convention ID chosen, each parameter and return location with its type, the return address and the stack
+pointer after the return. The printer writes unnamed identified structs by body, so output is deterministic.
 
-Simpler SysV case `long g(int a, double b, char c, char *d)`: a→EDI, b→XMM0, c→SIL, d→RDX (the SIL slot isn't reused); returns RAX:i64.
-Struct param `{i32,i32}` (e.g. `struct P{int x,y;}` passed by value as IR aggregate) → two decls `p0:i32@EDI`, `p1:i32@RDI` (packing).
+#### x86-64 System V
 
-**x86 cdecl (Linux i386)** — signature `<{i32,double}>(i32,float,ptr)`:
-- Return: EAX:i32, then double finds no float register (ST0/ST1 are kTypeVec) → RVO: `returns=[EAX:ptr]`, injected_sret.
-- Params: `<{i32,double}> @ [ESP+4]` (unnamed); stack_offset += 12 → 16; `param0:i32@[ESP+16]`, `param1:float@[ESP+20]`, `param2:ptr@[ESP+24]`.
-- `return_stack_pointer_offset = 8` (sret ⇒ `ret 4`); return address `[ESP+0]`.
-- For `int h(int, float, char*)`: returns `EAX:i32`; params `[ESP+4]`, `[ESP+8]`, `[ESP+12]`; RSP offset 4. `double h2()` → `ST0:double`. `long long h3()` → `EAX:i32, EDX:i32`, so the function type returns `%0 = {i32,i32}`.
+`tests/golden/passes/AllocateSignatures/x86_64_sysv.ll` (`anvill-opt --passes=AllocateSignatures`):
 
-**x86 stdcall / fastcall / thiscall**, `int h(int, float, char*)`: same stack layout as cdecl (`[ESP+4]`, `[ESP+8]`, `[ESP+12]`); `return_stack_pointer_offset = 16` (4 for the return address + 12 popped bytes). Fastcall/thiscall still put args on the stack, not in ECX/EDX. The sret variant gives 4+12+4+4+4 = 28.
+```llvm
+declare i32 @ints(i32 %a, i8 %b, i16 %c, i64 %d, ptr %e, i32 %f, i32 %g, i32 %h)
+declare double @floats(float %a, double %b, i32 %c)
+declare double @many_doubles(double, double, double, double, double, double, double, double, double, double)
+declare { i64, double } @ret_mixed(i32 %a, float %b, ptr %c)
+declare { i64, i64 } @ret_two_longs(i64 %a)
+declare { i64, i64, i64 } @ret_three_longs()
+declare i128 @wide(i128 %a)
+declare void @struct_arg({ i32, i32 } %s)
+declare x86_fp80 @long_double(x86_fp80 %a)
+declare i32 @variadic(ptr %fmt, ...)
+declare void @seven_longs({ i64, i64, i64, i64, i64, i64, i64 } %big, i32 %after)
+declare void @sret(ptr sret({ i64, i64, i64 }) %out, i32 %x)
+declare x86_64_sysvcc void @explicit_cc(i32 %x)
+declare void @no_return() noreturn
+declare { float, float, float } @ret_three_floats()
+declare { double, double } @ret_two_doubles({ double, double } %p)
+declare { i8, i8 } @ret_two_bytes({ i8, i8 } %p)
+declare { i32, float } @ret_int_float({ i32, float } %p)
+declare [2 x i32] @ret_array([2 x i32] %p)
+declare { x86_fp80 } @ret_struct_long_double({ x86_fp80 } %p)
+declare i256 @ret_i256(i256 %a)
+declare void @regs_exhausted(i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, { i64, i64 } %pair, i64 %f)
+declare void @aligned_stack(i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, i64 %f, i32 %g, i128 %h, x86_fp80 %i, i8 %j)
+declare <4 x float> @float_vector(<4 x float> %v, <2 x double> %w)
+declare x86_stdcallcc i32 @stdcall_on_amd64(i32 %a, i32 %b)
+declare x86_fastcallcc i32 @fastcall_on_amd64(i32 %a, i32 %b)
+```
 
-**AArch64** — `<{i64,double}>(i32,float,ptr)`:
-- Return: X0:i64 (W0/X0 slot, fill 64 → X0), D0:double (H0/S0/D0 slot) → `returns=[X0:i64, D0:double]` (real AAPCS64 would use X0,X1 since the struct is not an HFA).
-- Params: `param0:i32@W0`, `param1:float@S0` (the V0..V7 slots are integral, so it skips to the H/S/D slots), `param2:ptr@X1`. SP+0, RA = X30. This matches the real ABI.
+Output (`x86_64_sysv.expected.txt`):
 
-**AArch32** — `<{i32,double}>(i32,float,ptr)`:
-- Return: R0:i32, double has no float reg → None → fallback `returns=[R0:ptr]`, no hidden param.
-- Params: `param0:i32@R0` (collides with the "sret" R0), `param1:float@[SP+0]` (stack_offset→4), `param2:ptr@R1`. SP+0, RA = LR.
-- Real soft-float AAPCS: R0=sret, R1, R2, R3. `long long k(long long)`: param `x0:i32@R0, x1:i32@R1`; returns `R0:i32,R1:i32`.
+```
+@ints i32 (i32, i8, i16, i64, ptr, i32, i32, i32) cc 0
+  abi type: i32 (i32, i8, i16, i64, ptr, i32, i32, i32)
+  calling convention: 78
+  param a: EDI : i32
+  param b: SIL : i8
+  param c: DX : i16
+  param d: RCX : i64
+  param e: R8 : ptr
+  param f: R9D : i32
+  param g: [RSP + 8] : i32
+  param h: [RSP + 16] : i32
+  return: RAX : i32
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
 
-**SPARC32** — `<{i32,double}>(i32,float,ptr)`:
-- Return: o0:i32; double: f0..f3 have only 32 bits → d0 → `returns=[o0:i32, d0:double]` (the real V8 ABI returns structs in memory).
-- Params: `param0:i32@o0`, `param1:float@o1` (kTypeNumeric), `param2:ptr@o2`. A 7th int would be at `[o6+92]`; a double param goes straight to the stack. RSP = o6+0, RA = o7.
+@floats double (float, double, i32) cc 0
+  abi type: double (float, double, i32)
+  calling convention: 78
+  param a: XMM0 : float
+  param b: XMM1 : double
+  param c: EDI : i32
+  return: XMM0 : double
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
 
-**SPARC64** — `<{i64,double}>(i32,float,ptr)`:
-- Return: o0:i64, d0:double.
-- Params: `param0:i32@o0`, `param1:float@f1`, `param2:ptr@o1` (the real V9 ABI is slot-based: f3 and o2). The first stack arg is at `[o6+2227]`.
+@many_doubles double (double, double, double, double, double, double, double, double, double, double) cc 0
+  abi type: double (double, double, double, double, double, double, double, double, double, double)
+  calling convention: 78
+  param param0: XMM0 : double
+  param param1: XMM1 : double
+  param param2: XMM2 : double
+  param param3: XMM3 : double
+  param param4: XMM4 : double
+  param param5: XMM5 : double
+  param param6: XMM6 : double
+  param param7: XMM7 : double
+  param param8: [RSP + 8] : double
+  param param9: [RSP + 16] : double
+  return: XMM0 : double
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@ret_mixed { i64, double } (i32, float, ptr) cc 0
+  abi type: { i64, double } (i32, float, ptr)
+  calling convention: 78
+  param a: EDI : i32
+  param b: XMM0 : float
+  param c: RSI : ptr
+  return: RAX : i64
+  return: XMM0 : double
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@ret_two_longs { i64, i64 } (i64) cc 0
+  abi type: { i64, i64 } (i64)
+  calling convention: 78
+  param a: RDI : i64
+  return: RAX : i64
+  return: RDX : i64
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@ret_three_longs { i64, i64, i64 } () cc 0
+  abi type: ptr (ptr)
+  calling convention: 78
+  param __struct_ret_ptr: RDI : ptr
+  return: RAX : ptr
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@wide i128 (i128) cc 0
+  abi type: { i64, i64 } (i64, i64)
+  calling convention: 78
+  param a0: RDI : i64
+  param a1: RSI : i64
+  return: RAX : i64
+  return: RDX : i64
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@struct_arg void ({ i32, i32 }) cc 0
+  abi type: void (i64)
+  calling convention: 78
+  param s: RDI : i64
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@long_double x86_fp80 (x86_fp80) cc 0
+  abi type: x86_fp80 (x86_fp80)
+  calling convention: 78
+  param a: [RSP + 8] : x86_fp80
+  return: ST0 : x86_fp80
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@variadic i32 (ptr, ...) cc 0
+  abi type: i32 (ptr, ...)
+  calling convention: 78
+  param fmt: RDI : ptr
+  return: RAX : i32
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@seven_longs void ({ i64, i64, i64, i64, i64, i64, i64 }, i32) cc 0
+  abi type: void ({ i64, i64, i64, i64, i64, i64, i64 }, i32)
+  calling convention: 78
+  param big: [RSP + 8] : { i64, i64, i64, i64, i64, i64, i64 }
+  param after: EDI : i32
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@sret void (ptr, i32) cc 0
+  abi type: ptr (ptr, i32)
+  calling convention: 78
+  param out: RDI : ptr
+  param x: ESI : i32
+  return: RAX : ptr
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@explicit_cc void (i32) cc 78
+  abi type: void (i32)
+  calling convention: 78
+  param x: EDI : i32
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@no_return void () cc 0
+  abi type: void ()
+  calling convention: 78
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@ret_three_floats { float, float, float } () cc 0
+  abi type: { <2 x float>, float } ()
+  calling convention: 78
+  return: XMM0 : <2 x float>
+  return: XMM1 : float
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@ret_two_doubles { double, double } ({ double, double }) cc 0
+  abi type: { double, double } (double, double)
+  calling convention: 78
+  param p0: XMM0 : double
+  param p1: XMM1 : double
+  return: XMM0 : double
+  return: XMM1 : double
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@ret_two_bytes { i8, i8 } ({ i8, i8 }) cc 0
+  abi type: i16 (i16)
+  calling convention: 78
+  param p: DI : i16
+  return: AX : i16
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@ret_int_float { i32, float } ({ i32, float }) cc 0
+  abi type: i64 (i64)
+  calling convention: 78
+  param p: RDI : i64
+  return: RAX : i64
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@ret_array [2 x i32] ([2 x i32]) cc 0
+  abi type: i64 (i64)
+  calling convention: 78
+  param p: RDI : i64
+  return: RAX : i64
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@ret_struct_long_double { x86_fp80 } ({ x86_fp80 }) cc 0
+  abi type: x86_fp80 ({ x86_fp80 })
+  calling convention: 78
+  param p: [RSP + 8] : { x86_fp80 }
+  return: ST0 : x86_fp80
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@ret_i256 i256 (i256) cc 0
+  abi type: ptr (ptr, i256)
+  calling convention: 78
+  param __struct_ret_ptr: RDI : ptr
+  param a: [RSP + 8] : i256
+  return: RAX : ptr
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@regs_exhausted void (i64, i64, i64, i64, i64, { i64, i64 }, i64) cc 0
+  abi type: void (i64, i64, i64, i64, i64, { i64, i64 }, i64)
+  calling convention: 78
+  param a: RDI : i64
+  param b: RSI : i64
+  param c: RDX : i64
+  param d: RCX : i64
+  param e: R8 : i64
+  param pair: [RSP + 8] : { i64, i64 }
+  param f: R9 : i64
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@aligned_stack void (i64, i64, i64, i64, i64, i64, i32, i128, x86_fp80, i8) cc 0
+  abi type: void (i64, i64, i64, i64, i64, i64, i32, i128, x86_fp80, i8)
+  calling convention: 78
+  param a: RDI : i64
+  param b: RSI : i64
+  param c: RDX : i64
+  param d: RCX : i64
+  param e: R8 : i64
+  param f: R9 : i64
+  param g: [RSP + 8] : i32
+  param h: [RSP + 24] : i128
+  param i: [RSP + 40] : x86_fp80
+  param j: [RSP + 56] : i8
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@float_vector <4 x float> (<4 x float>, <2 x double>) cc 0
+  abi type: <4 x float> (<4 x float>, <2 x double>)
+  calling convention: 78
+  param v: XMM0 : <4 x float>
+  param w: XMM1 : <2 x double>
+  return: XMM0 : <4 x float>
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@stdcall_on_amd64 i32 (i32, i32) cc 64
+  abi type: i32 (i32, i32)
+  calling convention: 78
+  param a: EDI : i32
+  param b: ESI : i32
+  return: RAX : i32
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@fastcall_on_amd64 i32 (i32, i32) cc 65
+  abi type: i32 (i32, i32)
+  calling convention: 78
+  param a: EDI : i32
+  param b: ESI : i32
+  return: RAX : i32
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+```
+
+#### x86-64 System V with AVX
+
+`tests/golden/passes/AllocateSignatures/x86_64_sysv_avx.ll` (`anvill-opt --passes=AllocateSignatures --arch=amd64_avx`):
+
+```llvm
+declare { i64, double } @ret_mixed(i32 %a, float %b, ptr %c)
+declare double @floats(float %a, double %b, i32 %c)
+declare <8 x float> @wide_vector(<8 x float> %v, <4 x double> %w, double %d)
+```
+
+Output (`x86_64_sysv_avx.expected.txt`):
+
+```
+@ret_mixed { i64, double } (i32, float, ptr) cc 0
+  abi type: { i64, double } (i32, float, ptr)
+  calling convention: 78
+  param a: EDI : i32
+  param b: XMM0 : float
+  param c: RSI : ptr
+  return: RAX : i64
+  return: XMM0 : double
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@floats double (float, double, i32) cc 0
+  abi type: double (float, double, i32)
+  calling convention: 78
+  param a: XMM0 : float
+  param b: XMM1 : double
+  param c: EDI : i32
+  return: XMM0 : double
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@wide_vector <8 x float> (<8 x float>, <4 x double>, double) cc 0
+  abi type: <8 x float> (<8 x float>, <4 x double>, double)
+  calling convention: 78
+  param v: YMM0 : <8 x float>
+  param w: YMM1 : <4 x double>
+  param d: XMM2 : double
+  return: YMM0 : <8 x float>
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+```
+
+#### x86-32 cdecl, stdcall, fastcall and thiscall
+
+`tests/golden/passes/AllocateSignatures/x86_32.ll` (`anvill-opt --passes=AllocateSignatures`):
+
+```llvm
+declare i32 @cdecl_ints(i32 %a, i8 %b, i16 %c)
+declare i64 @cdecl_long_long(i64 %a)
+declare double @cdecl_double(double %a)
+declare { i32, double } @cdecl_ret_struct(i32 %a, float %b, ptr %c)
+declare x86_stdcallcc i32 @stdcall_ints(i32 %a, i32 %b)
+declare x86_fastcallcc i32 @fastcall_ints(i32 %a, i32 %b, i32 %c)
+declare x86_thiscallcc i32 @thiscall_method(ptr %this, i32 %a)
+declare i32 @cdecl_variadic(ptr %fmt, ...)
+declare x86_fastcallcc i32 @fastcall_mixed(i64 %a, i8 %b, double %c, ptr %d, i32 %e)
+declare x86_fastcallcc { i32, double } @fastcall_ret_struct(i32 %a, i32 %b)
+declare x86_thiscallcc { i32, double } @thiscall_ret_struct(ptr %this, i16 %a)
+declare x86_stdcallcc { i32, double } @stdcall_ret_struct(i32 %a)
+declare i32 @cdecl_small_slots(i8 %a, i16 %b, i64 %c, x86_fp80 %d, i8 %e)
+```
+
+Output (`x86_32.expected.txt`):
+
+```
+@cdecl_ints i32 (i32, i8, i16) cc 0
+  abi type: i32 (i32, i8, i16)
+  calling convention: 0
+  param a: [ESP + 4] : i32
+  param b: [ESP + 8] : i8
+  param c: [ESP + 12] : i16
+  return: EAX : i32
+  return address: [ESP] : i32
+  stack pointer on return: ESP + 4
+
+@cdecl_long_long i64 (i64) cc 0
+  abi type: { i32, i32 } (i64)
+  calling convention: 0
+  param a: [ESP + 4] : i64
+  return: EAX : i32
+  return: EDX : i32
+  return address: [ESP] : i32
+  stack pointer on return: ESP + 4
+
+@cdecl_double double (double) cc 0
+  abi type: double (double)
+  calling convention: 0
+  param a: [ESP + 4] : double
+  return: ST0 : double
+  return address: [ESP] : i32
+  stack pointer on return: ESP + 4
+
+@cdecl_ret_struct { i32, double } (i32, float, ptr) cc 0
+  abi type: ptr (ptr, i32, float, ptr)
+  calling convention: 0
+  param __struct_ret_ptr: [ESP + 4] : ptr
+  param a: [ESP + 8] : i32
+  param b: [ESP + 12] : float
+  param c: [ESP + 16] : ptr
+  return: EAX : ptr
+  return address: [ESP] : i32
+  stack pointer on return: ESP + 8
+
+@stdcall_ints i32 (i32, i32) cc 64
+  abi type: i32 (i32, i32)
+  calling convention: 64
+  param a: [ESP + 4] : i32
+  param b: [ESP + 8] : i32
+  return: EAX : i32
+  return address: [ESP] : i32
+  stack pointer on return: ESP + 12
+
+@fastcall_ints i32 (i32, i32, i32) cc 65
+  abi type: i32 (i32, i32, i32)
+  calling convention: 65
+  param a: ECX : i32
+  param b: EDX : i32
+  param c: [ESP + 4] : i32
+  return: EAX : i32
+  return address: [ESP] : i32
+  stack pointer on return: ESP + 8
+
+@thiscall_method i32 (ptr, i32) cc 70
+  abi type: i32 (ptr, i32)
+  calling convention: 70
+  param this: ECX : ptr
+  param a: [ESP + 4] : i32
+  return: EAX : i32
+  return address: [ESP] : i32
+  stack pointer on return: ESP + 8
+
+@cdecl_variadic i32 (ptr, ...) cc 0
+  abi type: i32 (ptr, ...)
+  calling convention: 0
+  param fmt: [ESP + 4] : ptr
+  return: EAX : i32
+  return address: [ESP] : i32
+  stack pointer on return: ESP + 4
+
+@fastcall_mixed i32 (i64, i8, double, ptr, i32) cc 65
+  abi type: i32 (i64, i8, double, ptr, i32)
+  calling convention: 65
+  param a: [ESP + 4] : i64
+  param b: CL : i8
+  param c: [ESP + 12] : double
+  param d: EDX : ptr
+  param e: [ESP + 20] : i32
+  return: EAX : i32
+  return address: [ESP] : i32
+  stack pointer on return: ESP + 24
+
+@fastcall_ret_struct { i32, double } (i32, i32) cc 65
+  abi type: ptr (ptr, i32, i32)
+  calling convention: 65
+  param __struct_ret_ptr: ECX : ptr
+  param a: EDX : i32
+  param b: [ESP + 4] : i32
+  return: EAX : ptr
+  return address: [ESP] : i32
+  stack pointer on return: ESP + 8
+
+@thiscall_ret_struct { i32, double } (ptr, i16) cc 70
+  abi type: ptr (ptr, ptr, i16)
+  calling convention: 70
+  param __struct_ret_ptr: [ESP + 4] : ptr
+  param this: ECX : ptr
+  param a: [ESP + 8] : i16
+  return: EAX : ptr
+  return address: [ESP] : i32
+  stack pointer on return: ESP + 12
+
+@stdcall_ret_struct { i32, double } (i32) cc 64
+  abi type: ptr (ptr, i32)
+  calling convention: 64
+  param __struct_ret_ptr: [ESP + 4] : ptr
+  param a: [ESP + 8] : i32
+  return: EAX : ptr
+  return address: [ESP] : i32
+  stack pointer on return: ESP + 12
+
+@cdecl_small_slots i32 (i8, i16, i64, x86_fp80, i8) cc 0
+  abi type: i32 (i8, i16, i64, x86_fp80, i8)
+  calling convention: 0
+  param a: [ESP + 4] : i8
+  param b: [ESP + 8] : i16
+  param c: [ESP + 12] : i64
+  param d: [ESP + 20] : x86_fp80
+  param e: [ESP + 32] : i8
+  return: EAX : i32
+  return address: [ESP] : i32
+  stack pointer on return: ESP + 4
+```
+
+#### AArch64
+
+`tests/golden/passes/AllocateSignatures/aarch64.ll` (`anvill-opt --passes=AllocateSignatures`):
+
+```llvm
+declare i32 @ints(i32 %a, float %b, ptr %c)
+declare i64 @nine_longs(i64, i64, i64, i64, i64, i64, i64, i64, i64)
+declare { i64, double } @ret_mixed(i32 %a)
+declare i128 @wide(i128 %a)
+declare double @doubles(double %a, float %b, half %c)
+declare void @sret(ptr sret({ i64, i64, i64 }) %out)
+declare { float, float, float } @hfa({ float, float, float } %a, [4 x double] %b, double %c, { float, float } %d)
+declare { i64, i64, i64 } @big_struct({ i64, i64, i64 } %a, i32 %b)
+declare void @pair_alignment(i32 %a, i128 %b, { i64, i32 } %c, i64 %d, i64 %e, i64 %f, { i64, i64 } %g, i32 %h)
+declare <4 x float> @vectors(<4 x float> %a, <2 x float> %b)
+declare i256 @huge_int(i256 %a)
+declare void @stack_hfa(double, double, double, double, double, double, double, { double, double } %h, float %f)
+```
+
+Output (`aarch64.expected.txt`):
+
+```
+@ints i32 (i32, float, ptr) cc 0
+  abi type: i32 (i32, float, ptr)
+  calling convention: 0
+  param a: W0 : i32
+  param b: S0 : float
+  param c: X1 : ptr
+  return: W0 : i32
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@nine_longs i64 (i64, i64, i64, i64, i64, i64, i64, i64, i64) cc 0
+  abi type: i64 (i64, i64, i64, i64, i64, i64, i64, i64, i64)
+  calling convention: 0
+  param param0: X0 : i64
+  param param1: X1 : i64
+  param param2: X2 : i64
+  param param3: X3 : i64
+  param param4: X4 : i64
+  param param5: X5 : i64
+  param param6: X6 : i64
+  param param7: X7 : i64
+  param param8: [SP] : i64
+  return: X0 : i64
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@ret_mixed { i64, double } (i32) cc 0
+  abi type: { i64, i64 } (i32)
+  calling convention: 0
+  param a: W0 : i32
+  return: X0 : i64
+  return: X1 : i64
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@wide i128 (i128) cc 0
+  abi type: { i64, i64 } (i64, i64)
+  calling convention: 0
+  param a0: X0 : i64
+  param a1: X1 : i64
+  return: X0 : i64
+  return: X1 : i64
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@doubles double (double, float, half) cc 0
+  abi type: double (double, float, half)
+  calling convention: 0
+  param a: D0 : double
+  param b: S1 : float
+  param c: H2 : half
+  return: D0 : double
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@sret void (ptr) cc 0
+  abi type: void (ptr)
+  calling convention: 0
+  param out: X8 : ptr
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@hfa { float, float, float } ({ float, float, float }, [4 x double], double, { float, float }) cc 0
+  abi type: { float, float, float } (float, float, float, double, double, double, double, double, { float, float })
+  calling convention: 0
+  param a0: S0 : float
+  param a1: S1 : float
+  param a2: S2 : float
+  param b0: D3 : double
+  param b1: D4 : double
+  param b2: D5 : double
+  param b3: D6 : double
+  param c: D7 : double
+  param d: [SP] : { float, float }
+  return: S0 : float
+  return: S1 : float
+  return: S2 : float
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@big_struct { i64, i64, i64 } ({ i64, i64, i64 }, i32) cc 0
+  abi type: void (ptr, ptr, i32)
+  calling convention: 0
+  param __struct_ret_ptr: X8 : ptr
+  param a: X0 : ptr
+  param b: W1 : i32
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@pair_alignment void (i32, i128, { i64, i32 }, i64, i64, i64, { i64, i64 }, i32) cc 0
+  abi type: void (i32, i64, i64, i64, i64, i64, i64, i64, { i64, i64 }, i32)
+  calling convention: 0
+  param a: W0 : i32
+  param b0: X2 : i64
+  param b1: X3 : i64
+  param c0: X4 : i64
+  param c1: X5 : i64
+  param d: X6 : i64
+  param e: X7 : i64
+  param f: [SP] : i64
+  param g: [SP + 8] : { i64, i64 }
+  param h: [SP + 24] : i32
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@vectors <4 x float> (<4 x float>, <2 x float>) cc 0
+  abi type: <4 x float> (<4 x float>, <2 x float>)
+  calling convention: 0
+  param a: Q0 : <4 x float>
+  param b: D1 : <2 x float>
+  return: Q0 : <4 x float>
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@huge_int i256 (i256) cc 0
+  abi type: void (ptr, ptr)
+  calling convention: 0
+  param __struct_ret_ptr: X8 : ptr
+  param a: X0 : ptr
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@stack_hfa void (double, double, double, double, double, double, double, { double, double }, float) cc 0
+  abi type: void (double, double, double, double, double, double, double, { double, double }, float)
+  calling convention: 0
+  param param0: D0 : double
+  param param1: D1 : double
+  param param2: D2 : double
+  param param3: D3 : double
+  param param4: D4 : double
+  param param5: D5 : double
+  param param6: D6 : double
+  param h: [SP] : { double, double }
+  param f: [SP + 16] : float
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+```
+
+#### AArch32 (base AAPCS)
+
+`tests/golden/passes/AllocateSignatures/aarch32.ll` (`anvill-opt --passes=AllocateSignatures`):
+
+```llvm
+declare i32 @ints(i32 %a, i64 %b, i32 %c)
+declare double @floats(float %a, double %b)
+declare i64 @ret_long_long(i32 %a)
+declare { i32, double } @ret_struct(i32 %a)
+declare i32 @five_ints(i32, i32, i32, i32, i32)
+declare void @split_struct(i32 %a, i32 %b, { i32, i32, i32 } %c, i32 %d)
+declare void @no_split_after_stack(i32 %a, i32 %b, i32 %c, i64 %d, i32 %e, i64 %f)
+declare { i8, i8 } @small_struct(i8 %a, i16 %b)
+declare void @sret(ptr sret({ i32, i32 }) %out, i32 %x)
+declare float @float_result(float %a, float %b)
+```
+
+Output (`aarch32.expected.txt`):
+
+```
+@ints i32 (i32, i64, i32) cc 0
+  abi type: i32 (i32, i32, i32, i32)
+  calling convention: 0
+  param a: R0 : i32
+  param b0: R2 : i32
+  param b1: R3 : i32
+  param c: [SP] : i32
+  return: R0 : i32
+  return address: LR : i32
+  stack pointer on return: SP + 0
+
+@floats double (float, double) cc 0
+  abi type: { i32, i32 } (float, i32, i32)
+  calling convention: 0
+  param a: R0 : float
+  param b0: R2 : i32
+  param b1: R3 : i32
+  return: R0 : i32
+  return: R1 : i32
+  return address: LR : i32
+  stack pointer on return: SP + 0
+
+@ret_long_long i64 (i32) cc 0
+  abi type: { i32, i32 } (i32)
+  calling convention: 0
+  param a: R0 : i32
+  return: R0 : i32
+  return: R1 : i32
+  return address: LR : i32
+  stack pointer on return: SP + 0
+
+@ret_struct { i32, double } (i32) cc 0
+  abi type: void (ptr, i32)
+  calling convention: 0
+  param __struct_ret_ptr: R0 : ptr
+  param a: R1 : i32
+  return address: LR : i32
+  stack pointer on return: SP + 0
+
+@five_ints i32 (i32, i32, i32, i32, i32) cc 0
+  abi type: i32 (i32, i32, i32, i32, i32)
+  calling convention: 0
+  param param0: R0 : i32
+  param param1: R1 : i32
+  param param2: R2 : i32
+  param param3: R3 : i32
+  param param4: [SP] : i32
+  return: R0 : i32
+  return address: LR : i32
+  stack pointer on return: SP + 0
+
+@split_struct void (i32, i32, { i32, i32, i32 }, i32) cc 0
+  abi type: void (i32, i32, i32, i32, i32, i32)
+  calling convention: 0
+  param a: R0 : i32
+  param b: R1 : i32
+  param c0: R2 : i32
+  param c1: R3 : i32
+  param c2: [SP] : i32
+  param d: [SP + 4] : i32
+  return address: LR : i32
+  stack pointer on return: SP + 0
+
+@no_split_after_stack void (i32, i32, i32, i64, i32, i64) cc 0
+  abi type: void (i32, i32, i32, i64, i32, i64)
+  calling convention: 0
+  param a: R0 : i32
+  param b: R1 : i32
+  param c: R2 : i32
+  param d: [SP] : i64
+  param e: [SP + 8] : i32
+  param f: [SP + 16] : i64
+  return address: LR : i32
+  stack pointer on return: SP + 0
+
+@small_struct { i8, i8 } (i8, i16) cc 0
+  abi type: i32 (i8, i16)
+  calling convention: 0
+  param a: R0 : i8
+  param b: R1 : i16
+  return: R0 : i32
+  return address: LR : i32
+  stack pointer on return: SP + 0
+
+@sret void (ptr, i32) cc 0
+  abi type: void (ptr, i32)
+  calling convention: 0
+  param out: R0 : ptr
+  param x: R1 : i32
+  return address: LR : i32
+  stack pointer on return: SP + 0
+
+@float_result float (float, float) cc 0
+  abi type: float (float, float)
+  calling convention: 0
+  param a: R0 : float
+  param b: R1 : float
+  return: R0 : float
+  return address: LR : i32
+  stack pointer on return: SP + 0
+```
+
+#### SPARC32
+
+`tests/golden/passes/AllocateSignatures/sparc.ll` (`anvill-opt --passes=AllocateSignatures`):
+
+```llvm
+declare i32 @ints(i32 %a, float %b, ptr %c)
+declare i32 @seven_ints(i32, i32, i32, i32, i32, i32, i32)
+declare i64 @ret_long_long(i64 %a)
+declare double @doubles(double %a)
+declare void @split_double(i32, i32, i32, i32, i32, double %d, i32 %after)
+declare { i32, i32 } @struct_result({ i32, i32 } %by_ref, fp128 %q)
+declare void @sret(ptr sret({ i32, i32 }) %out, i32 %x)
+```
+
+Output (`sparc.expected.txt`):
+
+```
+@ints i32 (i32, float, ptr) cc 0
+  abi type: i32 (i32, float, ptr)
+  calling convention: 0
+  param a: O0 : i32
+  param b: O1 : float
+  param c: O2 : ptr
+  return: O0 : i32
+  return address: O7 : i32
+  stack pointer on return: SP + 0
+
+@seven_ints i32 (i32, i32, i32, i32, i32, i32, i32) cc 0
+  abi type: i32 (i32, i32, i32, i32, i32, i32, i32)
+  calling convention: 0
+  param param0: O0 : i32
+  param param1: O1 : i32
+  param param2: O2 : i32
+  param param3: O3 : i32
+  param param4: O4 : i32
+  param param5: O5 : i32
+  param param6: [SP + 92] : i32
+  return: O0 : i32
+  return address: O7 : i32
+  stack pointer on return: SP + 0
+
+@ret_long_long i64 (i64) cc 0
+  abi type: { i32, i32 } (i32, i32)
+  calling convention: 0
+  param a0: O0 : i32
+  param a1: O1 : i32
+  return: O0 : i32
+  return: O1 : i32
+  return address: O7 : i32
+  stack pointer on return: SP + 0
+
+@doubles double (double) cc 0
+  abi type: double (i32, i32)
+  calling convention: 0
+  param a0: O0 : i32
+  param a1: O1 : i32
+  return: FD0 : double
+  return address: O7 : i32
+  stack pointer on return: SP + 0
+
+@split_double void (i32, i32, i32, i32, i32, double, i32) cc 0
+  abi type: void (i32, i32, i32, i32, i32, i32, i32, i32)
+  calling convention: 0
+  param param0: O0 : i32
+  param param1: O1 : i32
+  param param2: O2 : i32
+  param param3: O3 : i32
+  param param4: O4 : i32
+  param d0: O5 : i32
+  param d1: [SP + 92] : i32
+  param after: [SP + 96] : i32
+  return address: O7 : i32
+  stack pointer on return: SP + 0
+
+@struct_result { i32, i32 } ({ i32, i32 }, fp128) cc 0
+  abi type: ptr (ptr, ptr, ptr)
+  calling convention: 0
+  param __struct_ret_ptr: [SP + 64] : ptr
+  param by_ref: O0 : ptr
+  param q: O1 : ptr
+  return: O0 : ptr
+  return address: O7 : i32
+  stack pointer on return: SP + 0
+
+@sret void (ptr, i32) cc 0
+  abi type: ptr (ptr, i32)
+  calling convention: 0
+  param out: [SP + 64] : ptr
+  param x: O0 : i32
+  return: O0 : ptr
+  return address: O7 : i32
+  stack pointer on return: SP + 0
+```
 
 
 ---
@@ -1026,12 +1956,12 @@ Implementations:
 - `ProxyTypeProvider(const TypeProvider &deleg)`: forwards every pure/virtual method, including `Dictionary()`. Use it as a base for stacking providers.
 - `DefaultCallableTypeProvider(remill::ArchName default_arch, const TypeProvider &deleg) : ProxyTypeProvider`. Its impl is a `SmallDenseMap<ArchName underlying, CallableDecl, 16>`.
   - `SetDefault(arch, CallableDecl)`.
-  - `TryGetCalledFunctionType(fn_addr, inst)`: (1) the delegate's call-site decl; (2) **the delegate's `TryGetFunctionType(fn_addr)`, i.e. the *containing* function, not the callee [QUIRK]**, sliced to CallableDecl; (3) the default for `inst.arch_name`; (4) if `inst.arch_name != inst.sub_arch_name`, the default for `sub_arch_name`; else nullopt.
+  - `TryGetCalledFunctionType(fn_addr, inst)`: (1) the delegate's call-site decl; (step removed: it used to return the delegate's `TryGetFunctionType(fn_addr)`, i.e. the *containing* function's type, not the callee's; **fixed**. The callee's own declaration is looked up by the lifter itself, §10); (3) the default for `inst.arch_name`; (4) if `inst.arch_name != inst.sub_arch_name`, the default for `sub_arch_name`; else nullopt.
   - `TryGetFunctionType(addr)`: the delegate's, else a FunctionDecl built from the default for `default_arch` with `address = addr`. That makes *every* address look like a function.
 - `SpecificationTypeProvider(const Specification&) : BaseTypeProvider(spec.impl->type_translator)`, sharing `spec.impl`.
   - `TryGetCalledFunctionType(fn, inst)` → `impl->loc_to_call_site[{fn, inst.pc}]` (a CallSiteDecl sliced to CallableDecl).
   - `TryGetFunctionType(a)` → `*impl->address_to_function[a]` (exact start address).
-  - `TryGetVariableType(a, hint)` → `*impl->address_to_var[a]`. **Exact start address only**: despite the "inverted mapping of byte addresses" comment, Specification.cpp only emplaces the start address. The hint is ignored.
+  - `TryGetVariableType(a, hint)` → `impl->VariableContaining(a)`: the variable whose `[address, address + size)` contains `a`, so pointers into the middle of a variable are lifted as GEPs into it (§11, `lifter/data/pointers`). The hint is ignored. (**Fixed:** it was an exact start-address lookup.)
 
 ### 9.2 MemoryProvider
 ```cpp
@@ -1061,7 +1991,7 @@ using ControlFlowOverride = std::variant<std::monostate, Jump, Call, Return, Mis
 class ControlFlowProvider { virtual ControlFlowOverride GetControlFlowOverride(uint64_t addr) const = 0; };  // non-copyable
 ```
 - `NullControlFlowProvider` → `{}` (monostate).
-- `SpecificationControlFlowProvider(spec)` → `impl->control_flow_overrides[addr]`. This uses `unordered_map::operator[]` through the shared impl, so a lookup miss *inserts* a monostate entry. That is harmless but it mutates the shared state through a const method.
+- `SpecificationControlFlowProvider(spec)` → `impl->control_flow_overrides.find(addr)`, monostate on a miss. (**Fixed:** it used `operator[]` through the shared impl, so a lookup miss inserted a monostate entry, mutating shared state through a const method.)
 
 
 ---
@@ -1149,7 +2079,7 @@ There is dead code: an `if (inst_addr == func_address) { … if (inst_addr != fu
 
 `DecodeInstructionInto(addr, is_delayed, inst*, ctx)`:
 
-- Read up to `arch->MaxInstructionSize(ctx)` bytes, which is 15 on x86 and 4 on the fixed-width architectures. **[QUIRK]** The size is a function-local `static`, computed once for the first context.
+- Read up to `arch->MaxInstructionSize(ctx)` bytes, which is 15 on x86 and 4 on the fixed-width architectures. The size is computed for the current context. (**Fixed:** it was a function-local `static`, computed once for the first context.)
 - Stop at the first byte that is unknown or unavailable, or whose permission is `kReadable` or `kReadableWritable`. A byte with `kUnknown` permission is accepted.
 - Then call `arch->DecodeInstruction` or `DecodeDelayedInstruction`.
 
@@ -1176,8 +2106,8 @@ Control-flow orchestration per Remill flow kind. "Override" means `control_flow_
 | `NormalInsn` / `NoOp` | If the override is `Misc` with `stop` → `InsertError` (tail-call `__remill_error`). Otherwise `br` to `GetOrCreateBlock(pc, next_pc, fallthrough_context)`. Any other override kind → LOG(ERROR), then fallthrough. |
 | `InvalidInsn` | tail-call `__remill_error`, with the state argument replaced by `undef` (`MuteStateEscape`) |
 | `ErrorInsn` | lift the delayed instruction (taken path), then the same as Invalid |
-| `DirectJump` | Override `Jump`: CHECK exactly 1 target, CHECK it equals the Remill-decoded target, lift the delay slot, `br` to the target block (static context). Override `Call` (tail call): delay slot, `CallFunction(inst, block, branch_taken_pc)`, then `InsertError`. Else **FATAL**. |
-| `IndirectJump` | Override `Jump`: delay slot; then (a) if `type_provider.TryGetCalledFunctionType(func_address, inst)` gives a call-site prototype, treat it as a typed tail call: `CallCallableDecl(block, load PC, decl)` + `ret mem`; (b) else if there are targets → `DoSwitchBasedIndirectJump`; (c) else tail-call `__remill_jump`. Override `Call`: delay slot, `CallFunction(..., nullopt)`, `InsertError`. Override `Return`: `VisitFunctionReturn`. Else **FATAL**. |
+| `DirectJump` | Override `Jump`: CHECK exactly 1 target, CHECK it equals the Remill-decoded target, lift the delay slot, `br` to the target block (static context). Override `Call` (tail call): delay slot, `CallFunction(inst, block, branch_taken_pc)`, then `InsertError`. Else (no override; another kind is logged and ignored): delay slot, `br` to the decoded target. (**Fixed:** was FATAL.) |
+| `IndirectJump` | Override `Jump`: delay slot; then (a) if `type_provider.TryGetCalledFunctionType(func_address, inst)` gives a call-site prototype, treat it as a typed tail call: `CallCallableDecl(block, load PC, decl)` + `ret mem`; (b) else if there are targets → `DoSwitchBasedIndirectJump`; (c) else tail-call `__remill_jump`. Override `Call`: delay slot, `CallFunction(..., nullopt)`, `InsertError`. Override `Return`: `VisitFunctionReturn`. Else: delay slot, terminating tail call to `__remill_jump`. (**Fixed:** was FATAL.) |
 | `DirectFunctionCall` | delay slot; `can_return = CallFunction(inst, block, branch_taken_pc)`; `VisitAfterFunctionCall` |
 | `IndirectFunctionCall` | delay slot; `CallFunction(inst, block, nullopt)`; `VisitAfterFunctionCall` |
 | `FunctionReturn` | delay slot; tail-call `__remill_function_return` with the state muted (so the PC operand stays observable for later passes) |
@@ -1222,18 +2152,65 @@ Cases (from the source comment):
 2. One target → plain `br`, with the target's `context_assignments` applied to the context.
 3. Several targets → an *index* switch through an opaque intrinsic:
 
+Real IR, from `tests/golden/lifter/flow/jump_table.textproto` (`switch (x)` over 4 cases compiled to a
+`movslq`-relative jump table; the `Jump` override lists the 4 targets). `%28` is the computed jump target:
+
 ```llvm
-%pc   = load i64, ptr %PC                                       ; computed jump target
-%idx  = call i64 (i64, ...) @__anvill_complete_switch(i64 %pc, i64 4198688, i64 4198720, i64 4198752)
-switch i64 %idx, label %unreachable_default [ i64 0, label %inst_401220
-                                              i64 1, label %inst_401240
-                                              i64 2, label %inst_401260 ]
-unreachable_default:  unreachable
+  %42 = call i64 (i64, ...) @__anvill_complete_switch(i64 %28, i64 4198423, i64 4198429, i64 4198435, i64 4198441) #6, !pc !6
+  switch i64 %42, label %43 [
+    i64 0, label %inst_401017.i
+    i64 1, label %inst_40101d.i
+    i64 2, label %inst_401023.i
+    i64 3, label %inst_401029.i
+  ], !pc !6
+
+43:                                               ; preds = %22
+  unreachable, !pc !0
 ```
 
 `__anvill_complete_switch` is declared `iADDR (iADDR, ...)` with `readnone`. Each target block gets the context `ApplyTargetList(target.context_assignments, prev_context)`.
 
-Later, `JumpTableAnalysis` and `LowerSwitchIntrinsics` (§13) slice `%pc` back to the jump-table index computation, bound it with Z3, read the table through the `MemoryProvider`, and replace the whole construct with a native `switch` on the *original index variable*. That is what makes decompiled `switch` statements look natural.
+Later, `JumpTableAnalysis` and `LowerSwitchIntrinsics` (§13) slice the target back to the jump-table index
+computation, bound it with Z3, read the table through the `MemoryProvider`, and replace the whole construct with a
+native `switch` on the *original index variable*. That is what makes decompiled `switch` statements look natural.
+The optimized result (`jump_table.optimized.ll`):
+
+```llvm
+define i32 @table_switch(i32 %0) local_unnamed_addr #0 !pc !0 {
+  %2 = icmp ugt i32 %0, 3, !pc !1
+  br i1 %2, label %3, label %4, !pc !1
+
+3:                                                ; preds = %4, %1
+  br label %sub_401000__AII_B_0.lifted.exit, !pc !0
+
+4:                                                ; preds = %1
+  switch i32 %0, label %3 [
+    i32 0, label %inst_401017.i
+    i32 1, label %inst_40101d.i
+    i32 2, label %inst_401023.i
+    i32 3, label %inst_401029.i
+  ], !pc !2
+
+inst_401017.i:                                    ; preds = %4
+  br label %sub_401000__AII_B_0.lifted.exit, !pc !0
+
+inst_40101d.i:                                    ; preds = %4
+  br label %sub_401000__AII_B_0.lifted.exit, !pc !0
+
+inst_401023.i:                                    ; preds = %4
+  br label %sub_401000__AII_B_0.lifted.exit, !pc !0
+
+inst_401029.i:                                    ; preds = %4
+  br label %sub_401000__AII_B_0.lifted.exit, !pc !0
+
+sub_401000__AII_B_0.lifted.exit:                  ; preds = %inst_401029.i, %inst_401023.i, %inst_40101d.i, %inst_401017.i, %3
+  %5 = phi i32 [ -1, %3 ], [ 400, %inst_401029.i ], [ 300, %inst_401023.i ], [ 200, %inst_40101d.i ], [ 100, %inst_401017.i ]
+  ret i32 %5
+}
+```
+
+(**Fixed:** this never happened before: the slice contained `ptrtoint @__anvill_pc`, which the interpreter could
+not evaluate, and the old RAUW-based workaround mutated the module; see §13.3.2.)
 
 The `default` case is always `unreachable`. The proto's `Jump.stop` flag is not used here, and there is no "incomplete" form any more, although `__anvill_incomplete_switch` is still named in ABI.h.
 
@@ -1292,11 +2269,12 @@ The lifting happens in the semantics module. `EntityLifter::LiftEntity(FunctionD
 
 `DeclareEntity(FunctionDecl)` does the same without lifting, giving a declaration only. The driver uses it for functions not in `--lift_list`.
 
-### 10.10 End-to-end example (illustrative)
+### 10.10 End-to-end example
 
 Input: amd64 Linux, function at `0x401130`, bytes `8d 47 01 c3` (`lea eax,[rdi+1]; ret`), with a prototype `i32 (i32)` where the parameter is in `EDI`, the return is in `EAX`, RA = `[RSP]`, return SP = `RSP+8`, and a `Return` override at `0x401133`.
 
-After §10.2–10.7, before inlining:
+The input is `tests/golden/lifter/basic/increment.textproto`. After §10.2–10.7, before inlining, the IR has this
+shape (schematic; the golden files capture the IR after the lifter's local cleanup and after `OptimizeModule`):
 
 ```llvm
 define internal ptr @sub_401130__AII_B_0.lifted(ptr %state, i64 %pc, ptr %memory) alwaysinline {
@@ -1332,13 +2310,54 @@ define i32 @sub_401130__AII_B_0(i32 %0) noinline {
 !0 = !{i64 4198704}   !1 = !{i64 4198707}
 ```
 
-After inlining, the local cleanup and `OptimizeModule` (§13), the expected result is:
+After inlining and the local cleanup (`anvill-decompile-spec --ir_pre_opt`; real output,
+`increment.lifted.ll`, with `--add_names` so the function is named `inc`):
 
 ```llvm
-define i32 @sub_401130__AII_B_0(i32 %0) {
-  %2 = add i32 %0, 1, !pc !0
+@__anvill_sp = external global i64
+@__anvill_ra = external global i64
+@llvm.compiler.used = appending global [1 x ptr] [ptr @inc], section "llvm.metadata"
+
+; Function Attrs: noinline
+define i32 @inc(i32 %0) #0 !pc !0 {
+  %2 = call ptr @__remill_write_memory_64(ptr null, i64 ptrtoint (ptr @__anvill_sp to i64), i64 ptrtoint (ptr @__anvill_ra to i64)), !pc !0
+  %3 = add i32 %0, 1
+  %4 = call noundef i64 @__remill_read_memory_64(ptr noundef %2, i64 noundef ptrtoint (ptr @__anvill_sp to i64)) #2, !pc !1
+  %5 = call ptr @__remill_function_return(ptr undef, i64 %4, ptr %2), !pc !1
+  call void @__anvill_memory_escape(ptr %5)
+  ret i32 %3
+}
+
+; Function Attrs: noduplicate noinline nounwind optnone
+declare dso_local ptr @__remill_write_memory_64(ptr noundef, i64 noundef, i64 noundef) #1
+
+; Function Attrs: noduplicate noinline nounwind optnone
+declare dso_local i64 @__remill_read_memory_64(ptr noundef, i64 noundef) #1
+
+; Function Attrs: noduplicate noinline nounwind optnone
+declare dso_local ptr @__remill_function_return(ptr noundef nonnull align 1, i64 noundef, ptr noundef) #1
+
+declare void @__anvill_memory_escape(ptr)
+
+
+!0 = !{i64 4198704}
+!1 = !{i64 4198707}
+```
+
+After `OptimizeModule` (§13) (`increment.optimized.ll`):
+
+```llvm
+@__anvill_ra = external global i64
+@__anvill_stack_0 = external local_unnamed_addr global i64
+
+define i32 @inc(i32 %0) local_unnamed_addr #0 !pc !0 {
+  %2 = add i32 %0, 1
   ret i32 %2
 }
+
+declare dso_local ptr @__remill_function_return(ptr noundef nonnull align 1, i64 noundef, ptr noundef) local_unnamed_addr #1
+
+!0 = !{i64 4198704}
 ```
 
 How the `ret` disappears:
@@ -1457,7 +2476,7 @@ class ValueLifter { ValueLifter(const EntityLifter&);   // shares impl
   llvm::Constant *Lift(std::string_view data, llvm::Type *type) const;   // = impl->value_lifter.Lift(data, type, *impl, /*loc_ea=*/0)
   llvm::Constant *Lift(std::uint64_t ea, llvm::Type *value_type, unsigned address_space = 0) const;
        // = impl->value_lifter.GetPointer(ea, value_type, *impl, address_space)
-       // [QUIRK/bug] passes address_space into the `loc_ea` parameter; the real address_space stays 0.
+       // passes address_space as the address space (fixed: it used to be passed as `loc_ea`, leaving the address space 0)
 };
 class ValueLifterImpl { const LifterOptions &options; const llvm::DataLayout &dl; llvm::LLVMContext &context; TypeTranslator type_specifier; … };
 ```
@@ -1466,7 +2485,7 @@ class ValueLifterImpl { const LifterOptions &options; const llvm::DataLayout &dl
 APInt r(n*8, 0); for i<n: r <<= 8; r |= data[i];  data = data.substr(n)
 return (dl.isLittleEndian() && n > 1) ? r.byteSwap() : r
 ```
-**[QUIRK/latent bug]** `data[i]` is a (signed) `char` passed to `APInt::operator|=(uint64_t)`, so a byte ≥ 0x80 sign-extends and sets all the low 64 bits. A correct reimplementation should use `(uint8_t)data[i]`.
+Each byte is read as `uint8_t`. (**Fixed:** `data[i]` was a (signed) `char` passed to `APInt::operator|=(uint64_t)`, so a byte ≥ 0x80 sign-extended and set all the low 64 bits: `0x8001` (bytes `01 80`) became `0x80ff`. `lifter/data/integer_bytes`.)
 
 `Lift(data, type, ent, loc_ea)`:
 - iN: read `allocsize(type)` bytes and truncate to N bits if needed. So i24 reads 4 bytes, and i1 reads 1 byte.
@@ -1500,7 +2519,7 @@ class DataLifter { DataLifter(const LifterOptions&);
 `GetOrDeclareData(decl)`:
 1. `type = RecontextualizeType(decl.type)`. For each entity at `decl.address`, while `found_by_type` is not yet a GlobalValue:
    - GlobalAlias: if its value type == type → `found_by_type`; always `found_by_address = ga`.
-   - ConstantExpr: CHECK pointer type, then `found_by_address = ga`, where `ga` is null in that scope **[QUIRK: so CE entities are effectively ignored]**.
+   - ConstantExpr: CHECK pointer type, then `found_by_address = ce`. (**Fixed:** it assigned `ga`, which is null in that scope, so CE entities were ignored.)
    - GlobalVariables are ignored here; LiftData dedups them by name instead.
 2. If `found_by_type` → return it.
 3. `wrap_with_alias(val)`: if `CanBeAliased(val)` (backed by a definition, §B.4) → create `GlobalAlias::create(type, 0, External, "data_<hex>_<alnum enc>", module)` with aliasee `val`, `AddEntity(val)`, `AddEntity(ga)`, and return `ga`. Otherwise return `val`.
@@ -1553,7 +2572,7 @@ struct ResolvedCrossReference {
   std::int64_t Displacement(const llvm::DataLayout&) const;
 };
 ```
-`Displacement(dl)`: CHECK `size != 0`. Switch on `min(size, ptr_bits)`: 8/16/32 → sign-extend from the low 8/16/32 bits of `u.displacement`; 64 → as is; any other width → 0.
+`Displacement(dl)`: CHECK `size != 0`. Let `w = min(size, ptr_bits)`: sign-extend from the low `w` bits of `u.displacement` (any width, e.g. 1 for an `icmp` result). (**Fixed:** only 8/16/32/64 were handled and any other width gave 0, which made every SP comparison fold to `false` in RemoveStackPointerCExprs.)
 `{}` value-initialises everything to zero/false.
 
 ### 12.3 CrossReferenceFolder API
@@ -1586,7 +2605,7 @@ Fold<name>(lhs, rhs, mask, size):
 | UDiv, URem | MergeLeft | none | no |
 | SDiv, SRem | MergeLeft | Signed | no |
 | ICmp eq/ne/ugt/uge/ult | Merge | none | yes |
-| ICmp **ule uses `<`** **[QUIRK/bug]** | Merge | none | yes |
+| ICmp ule uses `<=` (**fixed:** it used `<`) | Merge | none | yes |
 | ICmp sgt/sge/slt/sle | Merge | Signed | yes |
 
 - `Merge`: `is_valid = lhs.valid & rhs.valid`, and each references_* flag is the OR of both sides.
@@ -1609,7 +2628,7 @@ Fold<name>(lhs, rhs, mask, size):
 4. Otherwise set `references_global_value = true`. If gv is a GlobalAlias with an aliasee → `xr = ResolveConstant(aliasee)`; note this overwrites the flag. Return.
 
 `ResolveConstantExpr(ce)`:
-- If `AddressOfEntity(ce)` resolves → `{address, size=ptr, references_entity, valid}`. **[QUIRK]** that `xr` is default-initialised, not `{}`, so the other bitfields are indeterminate.
+- If `AddressOfEntity(ce)` resolves → `{address, size=ptr, references_entity, valid}`, with all other flags clear. (**Fixed:** that `xr` was default-initialised, not `{}`, so the other bitfields were indeterminate.)
 - `size` = primitive bits of operand 0's type (pointer → ptr bits) and `mask = size<64 ? (1<<size)-1 : ~0`. `out_size`/`out_mask` are computed the same way from the CE's own type.
 - Add, Sub, Mul, And, Or, Xor, Shl, LShr, AShr, SDiv, UDiv, SRem, URem → `Fold<op>(RC(op0), RC(op1), mask, size)`, `size = out_size`.
 - ZExt → `address &= mask` (input mask); size = out.
@@ -1628,7 +2647,7 @@ Fold<name>(lhs, rhs, mask, size):
 - Otherwise the same masking rules as for CEs: Add…URem (no ICmp, Select or GEP *instructions*); Load → `ResolveLoad` (a load from a *constant* GlobalVariable with an initializer resolves to that initializer, else `{}`); ZExt/SExt/Trunc/IntToPtr/PtrToInt/BitCast as above; Call → `ResolveCall`; others → `{}`.
 
 `ResolveCall(call)`:
-- `llvm.ctlz` / `llvm.cttz` / `llvm.ctpop` → resolve arg0 and apply `__builtin_clzl` / `ctzl` / `popcountl` to the 64-bit address. **[QUIRK]** These use 64-bit semantics regardless of width, and clz/ctz of 0 is UB. size = call type bits.
+- `llvm.ctlz` / `llvm.cttz` / `llvm.ctpop` → resolve arg0, truncate it to the call's width W (≤ 64, else invalid) and count on W bits; a zero input counts as W. size = W. (**Fixed:** these used `__builtin_clzl`/`ctzl`/`popcountl` on the 64-bit address regardless of width, and clz/ctz of 0 was UB.) Shifts by at least the width give an invalid result (also fixed).
 - other intrinsics → `{}`.
 - Non-intrinsic call whose callee name starts with `__anvill_type_hint` → resolve arg0, size = ptr bits. Anything else → `{}`.
 
@@ -5165,13 +6184,14 @@ Source: `bin/Decompile/Main.cpp`. Flags use gflags.
 
 | Flag | Meaning |
 |---|---|
-| `--spec <path>` | **Binary protobuf** `specification.Specification`. `/dev/stdin` or `-` reads stdin. The help text still says "JSON", which is stale. |
+| `--spec <path>` | Protobuf `specification.Specification`: binary, or text format when the name ends in `.textproto` or `.txtpb` (new). `/dev/stdin` or `-` reads stdin. (The help text used to say "JSON".) |
+| `--ir_pre_opt <path>` | (new) write the IR after lifting and the lifter's local cleanup, before `OptimizeModule` |
 | `--ir_out <path>` | write textual LLVM IR |
 | `--bc_out <path>` | write bitcode |
 | `--stats_out <path>` | `llvm::EnableStatistics()` before optimizing, then `PrintStatisticsJSON`. This is where `CodeQualityStatCollector`'s `STATISTIC` counters show up. |
-| `--add_breakpoints` | declared but **not wired** to `options.add_breakpoints` **[QUIRK]** |
-| `--add_names` | after lifting, rename each function and variable to its spec symbol. On Apple triples a leading `_` is stripped. **[QUIRK]** For a function that failed to lift, `func` is null and `setName` crashes. |
-| `--default_callable_spec <path>` | a binary protobuf **`specification.Function`** whose `callable` is used as the prototype for any call target without type info (`DefaultCallableTypeProvider`). **[QUIRK]** If it fails to parse, the error is printed but `maybe_default_callable.Value()` is still called and throws. |
+| `--add_breakpoints` | sets `options.add_breakpoints` (§10; **fixed:** it was declared but not wired; `lifter/flow/breakpoints`) |
+| `--add_names` | after lifting, rename each function and variable to its spec symbol. On Apple triples a leading `_` is stripped. Functions that failed to lift are skipped (**fixed:** `setName` on a null `func` crashed). Since `OptimizeModule` can rename or replace entities, names of `sub_`/`var_` entities are re-applied after it through `lifter.AddressOfEntity`. |
+| `--default_callable_spec <path>` | a binary protobuf **`specification.Function`** whose `callable` is used as the prototype for any call target without type info (`DefaultCallableTypeProvider`). If it fails to parse, the error is printed and the tool exits with an error (**fixed:** `maybe_default_callable.Value()` was still called and threw). |
 | `--lift_list 0x..,0x..` | hex addresses separated by commas. Listed functions are lifted and all others are only declared. When empty, everything is lifted. |
 | `--version` | git-derived version info (`libraries/version` / `cmake/git_watcher.cmake` → `Version.cpp`) |
 
@@ -5186,13 +6206,17 @@ Flow:
    - stack frame `kSymbolic`, max frame 8192, word = pointer size;
    - `should_remove_anvill_pc = true`.
 5. `EntityLifter lifter(options)`. Then `ForEachFunction` → `LiftEntity` or `DeclareEntity`, and `ForEachVariable` → `LiftEntity`.
-6. `OptimizeModule(lifter, module)`.
-7. Write the outputs. The exit code is non-zero only on I/O errors. Individual function lift failures are only logged.
+6. If `--ir_pre_opt` is set, write the IR now. Apply `--add_names` (skipping functions that failed to lift).
+7. `OptimizeModule(lifter, module)`, then re-apply the names of `sub_`/`var_` entities.
+8. Write the outputs. The exit code is non-zero on I/O errors, on a specification that fails to load (e.g. a
+   duplicate function or override; see the `EXPECT-ERROR` cases) and on a bad `--default_callable_spec`.
+   Individual function lift failures are only logged.
 
 To reproduce the tool from scratch, a minimal command is:
 
 ```sh
 anvill-decompile-spec --spec prog.pb --ir_out prog.ll --add_names --stats_out stats.json
+anvill-decompile-spec --spec tests/golden/lifter/basic/increment.textproto --ir_out inc.ll --add_names
 ```
 
 The integration scripts (`scripts/test-amp-challenge-bins.sh`, `test-angha-1k.sh`, `ci/*settings.json`) drive this tool over corpora of binaries, using specs produced by the external Ghidra plugin (`irene3`). See §15.12–15.13.
@@ -6696,66 +7720,200 @@ The cxx-common/vcpkg setup described above has since been replaced by the [remil
 
 ---
 
-## 17. Consolidated list of quirks and bugs
+### 16.7 Golden tests: the executable specification
 
-These are grouped by component, with the section that explains each one. A clean-room reimplementation should decide case by case whether to copy or fix each one. Copying is needed to reproduce Anvill's exact output. Fixing produces more correct output.
+`tests/golden` holds input files and the exact expected output of the current implementation. Together they
+specify anvill's observable behaviour: a clean-room reimplementation is correct when it reproduces these files
+(modulo value names, if it chooses not to match them).
 
-**Specification and protobuf (§5, §6)**
-1. `ProtobufTranslator::DecodeType` builds a `FunctionType` and never returns it, so it falls through to "Unknown/invalid data type".
-2. A global-variable decode failure is logged but processing continues, and then `.Value()` throws on the failed `Result`.
-3. The duplicate global-variable check looks in the *function* map.
-4. `Specification::operator!=` is implemented as `==`.
-5. `VariableContaining` only matches exact start addresses.
-6. `overrides` is mandatory. A spec with no control flow must still contain an empty `overrides {}`.
-7. `CALLING_CONVENTION_CDECL = 1` is not a defined LLVM calling-convention ID (C is 0, fastcc is 8). The value is cast straight to `CallingConv::ID`.
-8. `Callable.return` has a single type applied to every return location. `return.type` is decoded unconditionally, so a void prototype must still send `return { type { base: BT_VOID } }`. Omitting `return` makes the loader skip the function (§5.4).
-9. `Call.return_address`, `Call.is_tailcall`, `Call.stop`, `Return.stop` and `Jump.stop` are parsed but ignored by the lifter. `StructType.identifier` is ignored too.
-10. `docs/SpecificationFormat.md` describes the removed JSON format. The `--spec` help text also says JSON.
+**Tools.**
 
-**ABI / calling conventions (§8)**
-11. SysV RVO: the hidden struct-return pointer is placed in **RAX** and typed as the struct, and RDI is blocked. A `{long,double}` return triggers RVO on plain AMD64 because the XMM return registers are `kTypeVec` only. The AVX variants return it correctly.
-12. fastcall and thiscall never use ECX/EDX. stdcall, fastcall and thiscall on AMD64 map to the 32-bit cdecl object.
-13. There is no Win64 convention. AMD64 Windows is an error.
-14. No register-allocation rollback, no alignment or even-pair rules, and stack slots are not rounded.
-15. Split integer returns are typed i32 on AArch64 and SPARC64. On AArch32, `double` returns are `R0:double, R1:double`, and an RVO return has no hidden parameter.
-16. Float vectors crash the allocator. A failed vector allocation "succeeds" with zero locations.
+- `anvill-decompile-spec` (§14) also accepts protobuf **text format** (`.textproto`/`.txtpb`) specifications,
+  and `--ir_pre_opt FILE` writes the IR after lifting and the lifter's local cleanup, before `OptimizeModule`.
+- `anvill-opt` (`bin/Opt/Main.cpp`, new) runs anvill passes on an `.ll` file, like LLVM's `opt`:
+  - `--passes=A,B,...`: anvill pass names (`RecoverBasicStackFrame`, `LowerSwitchIntrinsics`, …, the names in
+    §13); any other name is parsed by LLVM's `PassBuilder` (e.g. `instcombine<no-verify-fixpoint>`). The
+    pseudo-pass `OptimizeModule` runs the whole pipeline of §13.6, and `AllocateSignatures` prints the
+    calling-convention allocation of every function (§8.11) instead of IR.
+  - `--function NAME` restricts function passes to one function; `-o FILE`; `--verify` (default on).
+  - `--arch`/`--os` (default: from the module's triple), `--pc_metadata` (default `pc`; empty disables it).
+  - Stack-frame options: `--stack_init=symbolic|zeroes|undef|none`, `--stack_lower_padding`,
+    `--stack_higher_padding`, `--stack_max_size` (8192), `--stack_word_size` (0 = pointer size),
+    `--stack_offset_metadata` (`stack_offset`), `--stack_grows_up`.
+  - The cross-reference resolver maps globals named `sub_<hex>…`, `var_<hex>…` and `data_<hex>…` to those
+    addresses (exact addresses only). The memory provider reads `!anvill.memory = !{!{i64 address, !"hex
+    bytes", !"rwx"}}` module metadata, so jump tables can be given inline.
+- `tests/golden/run_golden.py --anvill-opt BIN --anvill-decompile-spec BIN [--update] [--filter TEXT] DIR`
+  runs the cases; `--update` rewrites the expected files. CMake registers it as the `golden` test, and
+  `cmake --build build --target update-golden` regenerates everything.
+- `tests/golden/tools/assemble.py [--triple T] [--address A] file.s` assembles a snippet at a fixed address
+  (clang, ld.lld, llvm-objcopy, llvm-objdump) and prints the disassembly as comments plus the escaped bytes for a
+  `memory_ranges` entry.
 
-**Types (§7)**
-17. The encoder always uses unsigned letters. `d`/`D` (x86_fp80) are swapped relative to the docs (12 and 16 bytes versus the documented 10 and 12). `w`/`W` are 3 bytes in code but 4 in the docs.
-18. In the wrapped-types branch (dead code), the 24-bit ints are assigned into the int32 slots.
+**Case formats.**
 
-**Lifter (§10, §11)**
-19. Missing `Jump` or `Call` overrides for direct jumps and calls are `LOG(FATAL)`.
-20. `MaxInstructionSize` is cached in a function-local `static`.
-21. There is dead redirection-recovery code in `VisitInstructions`.
-22. `ValueLifter::ConsumeBytesAsInt` sign-extends bytes ≥ 0x80, which corrupts integers.
-23. `ValueLifter::Lift(ea, type, as)` passes the address space as `loc_ea`.
-24. `DataLifter::GetOrDeclareData` ignores constant-expression entities, because `found_by_address` is assigned a null.
-25. `DefaultCallableTypeProvider::TryGetCalledFunctionType` looks up the *containing* function's type, not the callee's.
-26. `SpecificationControlFlowProvider` inserts into the shared map on a lookup miss.
+- `passes/<Pass>/<name>.ll`: `; RUN: <anvill-opt flags>` header lines (`%S` = the case's directory), a comment
+  explaining the case, and the input. Expected output: `<name>.expected.ll`, or `<name>.expected.txt` for
+  `AllocateSignatures`.
+- `lifter/<area>/<name>.textproto`: a `specification.Specification` in text format, `# RUN: <flags>` for
+  `anvill-decompile-spec`, and comments with the C source and disassembly. Expected output: `<name>.lifted.ll`
+  (`--ir_pre_opt`) and `<name>.optimized.ll` (the final IR). A `# EXPECT-ERROR: <text>` line instead requires the
+  tool to fail with that text.
+- The harness replaces `; ModuleID` and normalizes `source_filename` to the file's basename, so outputs do not
+  depend on the checkout path.
 
-**Cross-reference folder (§12)**
-27. `ICmp ule` is implemented as `<`. clz/ctz/ctpop use 64-bit semantics, and clz/ctz of 0 is UB.
-28. `ResolveConstantExpr`'s entity fast path leaves flags uninitialised. `Displacement()` returns 0 for sizes other than 8, 16, 32 and 64 (e.g. i1).
+**Index.** The first sentence of each case's comment:
 
-**Passes and pipeline (§13)**
-29. The module pass manager is reused, so the first function pipeline (and GlobalOpt/GlobalDCE) runs **twice**.
-30. `ConvertXorsToCmps` clears its invert lists per use and can mis-invert.
-31. `CombineAdjacentShifts` swaps its captured shift amounts.
-32. `ConvertMasksToCasts` doesn't check that the shift amount is half the width.
-33. `HoistUsersOfSelectsAndPhis` ignores operand order. It is unscheduled.
-34. `SplitStackFrameAtReturnAddress` mishandles variable-index GEPs and its sub-frame names look inverted.
-35. `ConvertSymbolicReturnAddressToConcreteReturnAddress` misses one replacement.
-36. `RemoveStackPointerCExprs` folds every one-bit stack-pointer comparison to `false`.
-37. `RemoveUnusedBranchHints` also deletes `__remill_compare_exchange*` calls.
-38. `SliceManager` performs RAUW on uniqued constants, which mutates the original module.
-39. `LowerSwitchIntrinsics` has no wrap guard on its loop and doesn't update PHIs.
-40. `SimplifyStackArithFlags` is not compiled. `AddSimplifyStackArithFlags` is declared but never defined.
+| Case | What it pins down |
+|---|---|
+| `passes/AllocateSignatures/aarch32.ll` | AArch32 (AAPCS, soft-float, Linux). |
+| `passes/AllocateSignatures/aarch64.ll` | AArch64 (AAPCS64, Linux). |
+| `passes/AllocateSignatures/sparc.ll` | SPARC32 (Linux). |
+| `passes/AllocateSignatures/x86_32.ll` | 32-bit x86 (Linux): cdecl, stdcall, fastcall and thiscall. |
+| `passes/AllocateSignatures/x86_64_sysv.ll` | Calling-convention allocation for x86-64 System V (Linux), as computed by FunctionDecl::Create for each declared function: the location of every parameter and return value, the return address, and the stack pointer after the … |
+| `passes/AllocateSignatures/x86_64_sysv_avx.ll` | x86-64 System V with AVX (--arch=amd64_avx): each XMM constraint gains a YMM variant (ApplyX86Ext), so 256-bit vectors are passed and returned in YMM registers while smaller values keep the XMM names. |
+| `passes/BranchRecovery/aarch64.ll` | AArch64 flag computations (NZCV) behind a compare hint. |
+| `passes/BranchRecovery/unrecoverable.ll` | A compare hint over the flags of an `add` (not a comparison of two values) matches none of the tried predicates and is left unchanged (it is removed later by RemoveUnusedBranchHints). |
+| `passes/BranchRecovery/x86_sub_sle.ll` | A signed less-or-equal (x86 jle after sub): the __remill_compare_sle hint over the ZF/SF/OF flag computations is proven (with Z3) equal to icmp sle RDX, RAX and replaced by it. |
+| `passes/CombineAdjacentShifts/basic.ll` | (ashr (shl V, A), B) with A = N/2 and B < A becomes (shl (sext (trunc V to iA)), A - B); other shapes are left alone. |
+| `passes/ConvertAddressesToEntityUses/basic.ll` | Values that resolve to the address of a lifted entity (here, globals named sub_/var_/data_<hex>, see anvill-opt) through @__anvill_pc-relative arithmetic are replaced by references to the entity; the entity gets the `pc` … |
+| `passes/ConvertAddressesToEntityUses/edge_cases.ll` | Edge cases of ConvertAddressesToEntityUses: - @phi: an address flowing into a PHI is replaced in the incoming block |
+| `passes/ConvertMasksToCasts/masks.ll` | (and V, M) where M keeps exactly the low half of the bits becomes (zext (trunc V)). |
+| `passes/ConvertMasksToCasts/shifted_add.ll` | (add (shl V, N), M << N) with N in {8, 16, 32, 64, 128} becomes (shl (add V, M), N); the original shl is removed if it has no other users. |
+| `passes/ConvertMasksToCasts/sign_extend.ll` | (ashr (shl V, S), S) sign-extends the low N - S bits of V and becomes (sext (trunc V to i(N-S))) for any 0 < S < N. |
+| `passes/ConvertSymbolicReturnAddressToConcreteReturnAddress/basic.ll` | Remaining uses of the symbolic return address (`ptrtoint @__anvill_ra`, possibly inside larger constant expressions) are replaced by the real return address: one `llvm.returnaddress(0)` call at the top of the entry block, … |
+| `passes/ConvertXorsToCmps/compare.ll` | (xor (icmp P a, b), true) becomes (icmp !P a, b) when every other user of the compare is a branch or a select condition: those branches get their successors swapped and those selects their values swapped, so they keep their … |
+| `passes/ConvertXorsToCmps/non_compare.ll` | (xor V, true) of a non-compare i1 used by branches: the branches use V and swap their successors; the xor is erased if nothing else uses it. |
+| `passes/ConvertXorsToCmps/not_invertible.ll` | The compare is not inverted when another user needs its original value (here a zext, and a select that also uses it as a value). |
+| `passes/HoistUsersOfSelectsAndPhis/phi.ll` | The same for PHI nodes: the operation is moved into each incoming block (before its terminator) and a new PHI merges the results. |
+| `passes/HoistUsersOfSelectsAndPhis/select.ll` | A binary operator with a constant other operand, a cast, or a GEP that uses a select is pushed into both arms of the select: |
+| `passes/LowerRemillMemoryAccessIntrinsics/basic.ll` | Remill memory intrinsics become plain loads and stores through `inttoptr` of the address; the memory pointer result of a write is replaced by its memory-pointer argument. |
+| `passes/LowerRemillMemoryAccessIntrinsics/extended_float.ll` | Extended-precision accesses, with remill's real signatures (amd64.bc): |
+| `passes/LowerRemillUndefinedIntrinsics/basic.ll` | Calls to __remill_undefined_* are replaced by undef values of their type. |
+| `passes/LowerSwitchIntrinsics/jump_table.ll` | A lifted jump table: a bounds check (x > 3 goes to %default), a load of a 32-bit table entry at 0x401038 + 4*x, the target 0x401038 + entry, and __anvill_complete_switch mapping the target to the case index of the lifted targets. |
+| `passes/LowerSwitchIntrinsics/missing_memory.ll` | Without the table bytes in memory the switch cannot be built and the dispatch is left unchanged. |
+| `passes/LowerSwitchIntrinsics/shared_target.ll` | Table entries 1 and 2 both point to 0x40101d (case1), so case2 is no longer a successor after lowering: its PHI drops the incoming value from the dispatch block (previously left behind, which made the IR invalid). |
+| `passes/LowerTypeHintIntrinsics/basic.ll` | Calls to __anvill_type_hint* functions are replaced by a bit/pointer cast of their (pointer-cast-stripped) argument to the call's type. |
+| `passes/RecoverBasicStackFrame/clamped_frame.ll` | The frame (recovered size + padding) is clamped to --stack_max_size. |
+| `passes/RecoverBasicStackFrame/init_none.ll` | Every use of a constant expression derived from `__anvill_sp` becomes a GEP into a new frame alloca (`%<function>.frame_type` = { [N x iW] }, W = word size); `--stack_init=none`. |
+| `passes/RecoverBasicStackFrame/init_symbolic.ll` | Every use of a constant expression derived from `__anvill_sp` becomes a GEP into a new frame alloca (`%<function>.frame_type` = { [N x iW] }, W = word size); `--stack_init=symbolic`. |
+| `passes/RecoverBasicStackFrame/init_undef.ll` | Every use of a constant expression derived from `__anvill_sp` becomes a GEP into a new frame alloca (`%<function>.frame_type` = { [N x iW] }, W = word size); `--stack_init=undef`. |
+| `passes/RecoverBasicStackFrame/init_zeroes.ll` | Every use of a constant expression derived from `__anvill_sp` becomes a GEP into a new frame alloca (`%<function>.frame_type` = { [N x iW] }, W = word size); `--stack_init=zeroes`. |
+| `passes/RecoverBasicStackFrame/no_stack_uses.ll` | A function without stack pointer uses gets no frame. |
+| `passes/RecoverBasicStackFrame/padding_and_word_size.ll` | Padding below (--stack_lower_padding, e.g. a red zone) and above (--stack_higher_padding) the accessed range grows the frame, and --stack_word_size=1 makes the frame an array of bytes. |
+| `passes/RemoveCompilerBarriers/basic.ll` | Compiler barriers are empty side-effecting inline asm calls. |
+| `passes/RemoveDelaySlotIntrinsics/absent.ll` | A module that does not declare the delay slot intrinsics is left unchanged. |
+| `passes/RemoveDelaySlotIntrinsics/basic.ll` | Calls to __remill_delay_slot_begin/__remill_delay_slot_end are replaced by their memory-pointer argument; their metadata is copied onto the memory pointer when it is an instruction. |
+| `passes/RemoveErrorIntrinsics/absent.ll` | Without a __remill_error declaration nothing changes. |
+| `passes/RemoveErrorIntrinsics/basic.ll` | A call to __remill_error and everything after it in its block is replaced by `unreachable` (the call's metadata moves to the `unreachable`). |
+| `passes/RemoveErrorIntrinsics/phi_incoming.ll` | PHI nodes lose the incoming values from blocks that now end in `unreachable`: a PHI left with one incoming value is replaced by it, with several it is rebuilt, and with none its block becomes unreachable too (and its value … |
+| `passes/RemoveRemillFunctionReturns/basic.ll` | Returns to the real return address are removed: the __remill_function_return call is replaced by its memory pointer and the return-address computation is erased. |
+| `passes/RemoveStackPointerCExprs/narrow.ll` | Constant expressions involving the stack pointer (`__anvill_sp`) that are narrower than a pointer (e.g. the low bits of RSP used by flag computations) are folded using a concrete stack pointer value: 0x00007ffc07000000 on … |
+| `passes/RemoveStackPointerCExprs/unresolvable.ll` | Stack pointer constant expressions that cannot be folded (they mix the stack pointer with an unknown global) are turned into instructions in the entry block, so that later passes see the individual operations. |
+| `passes/RemoveStackPointerCExprs/x86_flags.ll` | 32-bit x86 (concrete ESP 0x00860000): a sign-flag computation on ESP - 12. |
+| `passes/RemoveTrivialPhisAndSelects/basic.ll` | PHIs whose incoming values are all the same value, and selects whose two values are the same, are replaced by that value. |
+| `passes/RemoveUnusedBranchHints/basic.ll` | Branch hints that BranchRecovery did not use are removed: calls to __remill_compare_* and __remill_flag_computation_* are replaced by their first argument (the computed i1). |
+| `passes/RemoveUnusedFPClassificationCalls/basic.ll` | Calls to fpclassify, __fpclassifyd, __fpclassifyf and __fpclassifyld whose result is unused are erased; used calls and calls to other functions with an unused result are kept. |
+| `passes/SinkSelectionsIntoBranchTargets/basic.ll` | A select whose condition is also the condition of a branch: uses of the select dominated by the taken edge use the true value, uses dominated by the not-taken edge use the false value. |
+| `passes/SinkSelectionsIntoBranchTargets/partial.ll` | Uses not dominated by either edge (here, after the join and in the branch block itself) keep the select; PHI uses are judged by their incoming edge. |
+| `passes/SplitStackFrameAtReturnAddress/after_recovery.ll` | After RecoverBasicStackFrame, the frame is split at the slot that holds the return address into three allocas: the callee's locals (lower addresses), `return_address_loc`, and the caller's stack `parameters` (higher addresses). |
+| `passes/SplitStackFrameAtReturnAddress/full_cleanup.ll` | The split frames are designed for SROA: after it the local becomes an SSA value and the stack argument a part of the symbolic stack word @__anvill_stack_plus_8. |
+| `passes/SplitStackFrameAtReturnAddress/variable_index.ll` | A GEP with constant and then variable indices into the frame: the new GEP must start from the constant part of the offset (slot 1) and be placed where the old GEP was, because its variable index (%i) is not available in the … |
+| `passes/SpreadPCMetadata/basic.ll` | Instructions without `pc` metadata get one: first, an annotated instruction gives its metadata to unannotated operands defined in the same block; then, walking each block backwards starting with the block's last metadata, … |
+| `passes/TransformRemillJumpIntrinsics/basic.ll` | An indirect jump (__remill_jump) whose target is the return address is a return: the call is redirected to __remill_function_return (with an undef state pointer), and the function is cleaned up with DCE, SROA, SimplifyCFG and … |
+| `lifter/arch/aarch32_even_pair.textproto` | AArch32 (base AAPCS): a 64-bit argument starts at an even register, so `b` is in R2:R3 and R1 is unused. |
+| `lifter/arch/aarch64_add.textproto` | AArch64 with a type-only prototype: arguments in W0 and W1, the result in W0, the return address in X30 (LR). |
+| `lifter/arch/aarch64_indirect_result.textproto` | AArch64 result larger than 16 bytes: the caller passes the address of the result buffer in X8, so the lifted native function takes a hidden first `ptr` parameter and returns void. |
+| `lifter/arch/sparc32_no_semantics.textproto` | SPARC32 leaf function whose addition is in the delay slot of `retl`. |
+| `lifter/arch/x86_cdecl.textproto` | 32-bit x86 cdecl with a type-only prototype: the allocator puts both arguments on the stack in 4-byte slots ([ESP + 4], [ESP + 8]) and the result in EAX; the caller pops the arguments (ESP + 4 after the return). |
+| `lifter/arch/x86_fastcall.textproto` | 32-bit x86 fastcall: the first two 32-bit arguments are in ECX and EDX, the third is on the stack at [ESP + 4], and the callee pops it (`ret 4`, ESP + 8 after the return). |
+| `lifter/basic/increment.textproto` | `int inc(int x) { return x + 1; }` with an explicit-location prototype (EDI → EAX): the end-to-end example of §10.10. |
+| `lifter/data/integer_bytes.textproto` | Integer initializers are read from the memory bytes in the architecture's endianness. |
+| `lifter/data/pointers.textproto` | Pointer-typed data is lifted to references to the entities at the target addresses: a function (declared from its prototype), the start of another variable, an interior address of a variable (a GEP into it), a pointer to … |
+| `lifter/flow/breakpoints.textproto` | With --add_breakpoints every lifted instruction is preceded by a call to `breakpoint_<pc>(mem, PC, NEXT_PC)`; the functions are `optnone` so the calls survive optimization (previously the flag was ignored). |
+| `lifter/flow/call_without_prototype.textproto` | A call to an address with no function declaration and no call-site prototype is lifted as `__remill_function_call` (logged as missing type information); lifting continues at the return address. |
+| `lifter/flow/conditional_branch.textproto` | A conditional branch is lifted as a `br` on remill's BRANCH_TAKEN variable between the taken target and the fall-through; each `ret` is a separate return. |
+| `lifter/flow/declaration_only.textproto` | FUNCTION_LINKAGE_DECL: the function is declared with its prototype but its bytes are not lifted. |
+| `lifter/flow/direct_call.textproto` | A frame-pointer function that spills its argument to the stack and calls an external function. |
+| `lifter/flow/direct_jump_no_override.textproto` | A direct jump without a control-flow override goes to the decoded target (previously a fatal error: every direct jump needed a Jump override). |
+| `lifter/flow/falls_off_mapped_memory.textproto` | Execution falls through to an address with no bytes in the specification: the decode fails and the block ends with `__remill_error`. |
+| `lifter/flow/global_variable_access.textproto` | RIP-relative loads and stores of a global variable become direct uses of the lifted global (ConvertAddressesToEntityUses). |
+| `lifter/flow/indirect_call_callsite.textproto` | An indirect call whose prototype comes from a Callsite entry (keyed by the containing function and the call address). |
+| `lifter/flow/indirect_jump_unknown.textproto` | An indirect jump without targets (and without an override) becomes a tail call to `__remill_jump` (previously a fatal error without an override). |
+| `lifter/flow/jump_table.textproto` | A switch compiled to a jump table. |
+| `lifter/flow/loop.textproto` | A backwards branch produces a loop. |
+| `lifter/flow/noreturn_call.textproto` | A call to an `is_noreturn` function ends the block with `__remill_error`; the code after the call is not lifted, and the callee is declared noreturn. |
+| `lifter/flow/stop_override.textproto` | An `others { stop: true }` override on a normal instruction stops lifting after that instruction: the block ends with `__remill_error` and the following instructions are not lifted. |
+| `lifter/flow/syscall.textproto` | `syscall` is an asynchronous hyper call: the block ends with a tail call to `__remill_async_hyper_call`. |
+| `lifter/flow/tail_call.textproto` | A direct jump marked as a call by a Call override is a tail call: the callee is called with the current state and the block ends with `__remill_error` (control never falls out of a tail call). |
+| `lifter/flow/trap_instruction.textproto` | `ud2` is an error instruction: its path ends with `__remill_error`, which RemoveErrorIntrinsics turns into `unreachable`, so the optimizer can assume that path is never taken. |
+| `lifter/flow/undecodable.textproto` | Bytes that do not decode (here `06`, invalid in 64-bit mode) end the block with `__remill_error`. |
+| `lifter/spec/callable_type.textproto` | Prototype given as a C-level function type (`callable.type`) instead of explicit locations: the calling-convention allocator places the arguments. |
+| `lifter/spec/cdecl_calling_convention.textproto` | CALLING_CONVENTION_CDECL (1) is not an LLVM calling convention ID; it maps to the C calling convention (0). |
+| `lifter/spec/duplicate_function.textproto` | Two functions at the same address are rejected. |
+| `lifter/spec/duplicate_override.textproto` | Two control-flow overrides for the same address are rejected (previously a CHECK failure that aborted the process). |
+| `lifter/spec/global_variables.textproto` | Global variables are lifted as `var_<addr>_<type>` with an initializer built from the memory bytes. |
+| `lifter/spec/sparc64_unsupported.textproto` | SPARC64 does not work with the current remill: remill::Arch::Build for SPARC64 populates its register table using the register window type, which only exists after a semantics module was loaded, so building the architecture … |
+| `lifter/spec/unsupported_arch.textproto` | The architecture must be specified. |
+| `lifter/spec/void_return.textproto` | A void prototype may omit `return` entirely (previously the loader required `return { type { base: BT_VOID } }` and silently skipped the function). |
 
-**Driver (§14)**
-41. `--add_breakpoints` is not wired up. `--add_names` crashes on functions that failed to lift. A bad `--default_callable_spec` throws.
+## 17. Consolidated list of quirks and bugs, with status
 
-**Python (§15)** — see §15.14 for 17 items, including union serialisation, the IDA `char` crash and the missing `itertools` import.
+These were found in the original code (commit `9948d26`). The status says what this branch did: **Fixed** (with
+the golden case or unit test that pins the new behaviour), **Kept** (deliberately, with the reason), or
+**Open** (still present). The section reference describes the old and the new behaviour. A clean-room
+reimplementation that wants the original output must reproduce the "old" side of each fixed item.
+
+| # | Original behaviour | Status | Evidence |
+|---|---|---|---|
+| | **Specification and protobuf (§5, §6)** | | |
+| 1 | `ProtobufTranslator::DecodeType` builds a `FunctionType` and never returns it, so every `callable.type` prototype is skipped. | Fixed | `lifter/spec/callable_type`, `lifter/arch/*`, `SpecificationTest.cpp` |
+| 2 | A global-variable decode failure is logged, then `.Value()` throws on the failed `Result`. | Fixed (skipped with a warning) | `lifter/spec/global_variables` |
+| 3 | The duplicate global-variable check looks in the *function* map. | Fixed | `SpecificationTest.cpp` |
+| 4 | `Specification::operator!=` is implemented as `==`. | Fixed | `SpecificationTest.cpp` |
+| 5 | `VariableContaining` only matches exact start addresses. | Fixed | `lifter/data/pointers`, `SpecificationTest.cpp` |
+| 6 | `overrides` is mandatory. | Fixed (optional) | every lifter case without overrides |
+| 7 | `CALLING_CONVENTION_CDECL = 1` is cast straight to `CallingConv::ID` (not a valid ID). | Fixed (maps to C) | `lifter/spec/cdecl_calling_convention` |
+| 8 | `return.type` is decoded unconditionally, so a void prototype needs `return { type { base: BT_VOID } }`; one type applies to every return location. | Fixed (void may omit `return`); one type per `return` kept | `lifter/spec/void_return` |
+| 9 | `Call.return_address`, `Call.is_tailcall`, `Call.stop`, `Return.stop`, `Jump.stop` and `StructType.identifier` are parsed but ignored. | Open | — |
+| 10 | `docs/SpecificationFormat.md` describes the removed JSON format; the `--spec` help said JSON. | Fixed (help text; the doc carries an "outdated" banner pointing here) | — |
+| 10a | A duplicate control-flow override is a `CHECK` failure (process abort). | Fixed (an error) | `lifter/spec/duplicate_override` |
+| | **ABI / calling conventions (§8)** | | |
+| 11 | SysV: the RVO pointer is in RAX, typed as the struct, with RDI blocked; `{long, double}` goes to RVO on plain AMD64; aggregates are split ad hoc. | Fixed (psABI eightbyte classification) | `AllocateSignatures/x86_64_sysv*.ll` |
+| 12 | fastcall/thiscall never use ECX/EDX; stdcall/fastcall/thiscall on AMD64 use the 32-bit cdecl object. | Fixed | `AllocateSignatures/x86_32.ll`, `x86_64_sysv.ll`, `lifter/arch/x86_fastcall` |
+| 13 | There is no Win64 (or vectorcall) convention; AMD64 Windows is an error. | Open | — |
+| 14 | No register-allocation rollback, no alignment or even-pair rules, stack slots not rounded. | Fixed | `AllocateSignatures/*` |
+| 15 | Split integer returns typed i32 on AArch64 and SPARC64; AArch32 `double` returns as `R0:double, R1:double`; AArch32 RVO without a hidden parameter. | Fixed (AAPCS64/AAPCS rewrites; SPARC64 i64 parts) | `AllocateSignatures/aarch64.ll`, `aarch32.ll` |
+| 16 | Float vectors crash the allocator; a failed vector allocation "succeeds" with zero locations. | Fixed | `AllocateSignatures/x86_64_sysv*.ll` (`<4 x float>`, `<8 x float>`) |
+| 16a | AArch64: a ninth integer argument and `i128` go to V registers; `sret` in X0; no HFAs; large aggregates rejected. | Fixed | `AllocateSignatures/aarch64.ll`, `lifter/arch/aarch64_indirect_result` |
+| 16b | SPARC32: `double` arguments always on the stack; aggregate results rejected; register names no longer exist in remill. | Fixed | `AllocateSignatures/sparc.ll` |
+| 16c | x86-32 cdecl returns small aggregates in EAX:EDX (MSVC style) even on Linux, where the i386 psABI uses memory. | Kept | `AllocateSignatures/x86_32.ll` |
+| | **Types (§7)** | | |
+| 17 | The encoder always uses unsigned letters; `d`/`D` and `w`/`W` sizes disagree with TypeEncoding.md. | Fixed (docs corrected; unsigned letters kept, documented) | `docs/TypeEncoding.md` |
+| 18 | In the wrapped-types branch (dead code), the 24-bit ints are assigned into the int32 slots. | Fixed | — (compiled out) |
+| | **Lifter (§10, §11)** | | |
+| 19 | Missing `Jump` or `Call` overrides for direct jumps and calls are `LOG(FATAL)`. | Fixed (defaults, §5.3) | `lifter/flow/direct_jump_no_override`, `indirect_jump_unknown`, `direct_call` |
+| 20 | `MaxInstructionSize` is cached in a function-local `static`. | Fixed | — |
+| 21 | Dead redirection-recovery code in `VisitInstructions`. | Fixed (removed) | — |
+| 22 | `ValueLifter::ConsumeBytesAsInt` sign-extends bytes ≥ 0x80. | Fixed | `lifter/data/integer_bytes` |
+| 23 | `ValueLifter::Lift(ea, type, as)` passes the address space as `loc_ea`. | Fixed | — |
+| 24 | `DataLifter::GetOrDeclareData` ignores constant-expression entities. | Fixed | `lifter/data/pointers` |
+| 25 | `DefaultCallableTypeProvider::TryGetCalledFunctionType` returns the *containing* function's type. | Fixed (step removed) | `lifter/flow/call_without_prototype` |
+| 26 | `SpecificationControlFlowProvider` inserts into the shared map on a lookup miss. | Fixed | — |
+| 26a | Tail calls did not return the callee's result. | Fixed | `lifter/flow/tail_call` |
+| 26b | Declaration-only functions (no uses) are removed by GlobalDCE in `OptimizeModule`. | Open (documented) | `lifter/flow/declaration_only` |
+| 26c | A data pointer to its own variable stays an `inttoptr` constant. | Open (documented) | `lifter/data/pointers` |
+| 26d | SPARC32 instructions have no semantics in this remill (EmulateInstruction hyper calls); SPARC64 `Arch::Build` aborts. | Open (upstream remill) | `lifter/arch/sparc32_no_semantics`, `lifter/spec/sparc64_unsupported` |
+| | **Cross-reference folder (§12)** | | |
+| 27 | `ICmp ule` is `<`; clz/ctz/ctpop use 64-bit semantics (clz/ctz of 0 UB); oversized shifts are not invalid. | Fixed | `CrossReferenceFolderTest.cpp` |
+| 28 | The entity fast path leaves flags uninitialised; `Displacement()` returns 0 for widths other than 8/16/32/64. | Fixed | `CrossReferenceFolderTest.cpp`, `RemoveStackPointerCExprs/*` |
+| | **Passes and pipeline (§13; full table in §13.8)** | | |
+| 29 | The first function pipeline (and GlobalOpt/GlobalDCE) runs **twice**. | Kept (the output depends on it) | `lifter/**/*.optimized.ll` |
+| 30–40 | `ConvertXorsToCmps`, `CombineAdjacentShifts`, `ConvertMasksToCasts`, `HoistUsersOfSelectsAndPhis`, `SplitStackFrameAtReturnAddress`, `ConvertSymbolicReturnAddressToConcreteReturnAddress`, `RemoveStackPointerCExprs`, `RemoveUnusedBranchHints`, `SliceManager`, `LowerSwitchIntrinsics` bugs; dead `SimplifyStackArithFlags`. | Fixed / removed | §13.8 |
+| 40a | `RecoverBasicStackFrame`: unaligned frame, wrong `__anvill_stack_zero`, whole-frame init store, slot-count array length, init past a clamped frame. | Fixed | `RecoverBasicStackFrame/*` |
+| | **Driver (§14)** | | |
+| 41 | `--add_breakpoints` is not wired up; `--add_names` crashes on functions that failed to lift; a bad `--default_callable_spec` throws. | Fixed | `lifter/flow/breakpoints` |
+| | **Python (§15)** — see §15.14 for 17 items, including union serialisation, the IDA `char` crash and the missing `itertools` import. | Open (the Python generator was not changed) | — |
 
 ---
 
@@ -6765,17 +7923,17 @@ A practical order for building an equivalent tool, with the "must match" contrac
 
 1. **Spec model and parser.**
    - Generate C++ from `specification.proto` and implement §5–§6.
-   - Decide up front whether to keep the quirks: mandatory overrides, a single return type, and the ignored fields.
+   - Decide up front whether to reproduce the original quirks (§17's "old" behaviour, e.g. mandatory overrides) or the fixed behaviour that the golden files pin down.
    - Write a protobuf **text-format → binary** helper so you can author tests by hand (e.g. `protoc --encode=specification.Specification specification.proto < x.textproto > x.pb`).
 2. **TypeSpec ⇄ LLVM types and the symbol-name encoder** (§7).
    - Structs are packed literals, pointers are opaque `ptr`, and `Unknown(n)` becomes `i(8n)`.
    - The encoder is needed for `sub_<addr>_<enc>_<cc>` and `var_<addr>_<enc>` names, which later passes rely on. For example, `.frame_type` lookup uses the function name prefix.
-3. **Calling-convention allocator** (§8): `AllocationState` first-fit over ordered register tables, plus per-convention tables, stack starting offsets, the return stack pointer and the return-address location. Needed for `callable.type` prototypes (broken in this revision, see §6) and for `FunctionDecl::Create` from LLVM functions. Explicit-location specs bypass it.
+3. **Calling-convention allocator** (§8): `AllocationState` first-fit over ordered register tables, plus per-convention tables, stack starting offsets, the return stack pointer and the return-address location. Needed for `callable.type` prototypes and for `FunctionDecl::Create` from LLVM functions. Explicit-location specs bypass it. Check it against `tests/golden/passes/AllocateSignatures/*.expected.txt` (§8.11).
 4. **`LoadLiftedValue` / `StoreNativeValue` / `AdaptToType`** (Appendix B), then **`CallFromLiftedBlock`** (§8.5).
 5. **Function lifter** (§10).
    - Implement the edge work list, the flow table in §10.4, typed calls through the symbolic PC, and the `__anvill_complete_switch` index switch.
    - Then the native wrapper with `State` alloca and register globals, recursive inlining with `!pc` propagation, the light cleanup, and the copy into the target module.
-   - Use the §10.10 example as the first end-to-end test.
+   - Use the §10.10 example (`tests/golden/lifter/basic/increment`) as the first end-to-end test.
 6. **Data and value lifter** (§11): globals as `var_<addr>_<enc>` with initialisers built from memory bytes, pointers resolved to entities, interior pointers as GEPs, and constness from permissions.
 7. **Cross-reference folder** (§12). Many passes depend on it.
 8. **The passes**, in this order of payoff:
@@ -6792,13 +7950,16 @@ A practical order for building an equivalent tool, with the "must match" contrac
    Schedule them exactly as in §13.6, including the double run if output parity matters.
 9. **Driver** (§14).
 10. **Validation.**
+    - Run the golden suite (§16.7) against your implementation: each `passes/**/*.ll` through your pass runner
+      with the `RUN` flags, each `lifter/**/*.textproto` through your lifter, and compare with the expected files.
+      A port of `run_golden.py` only needs a different command line per tool.
     - Port `tests/anvill_passes` (the `.ll` fixtures and their expected counts) and `tests/tools`.
     - Re-create the round-trip harness (§15.11): compile C, generate a spec, lift, recompile the `.bc`, and compare stdout and exit code. A spec producer is needed for this; the protobuf one is not open source.
 
 Things you can leave out at first:
 
 - the Python generator (stale; §15);
-- `HoistUsersOfSelectsAndPhis` and `SimplifyStackArithFlags` (unused);
+- `HoistUsersOfSelectsAndPhis` (not scheduled); `SimplifyStackArithFlags` was removed;
 - data-provenance and breakpoint instrumentation;
 - the wrapped-types mode of `TypeDictionary` (compiled out).
 
