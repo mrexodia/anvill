@@ -21,8 +21,13 @@ class RemoveUnusedBranchHints
 
   static bool isTargetInstrinsic(const llvm::CallInst *callinsn) {
     if (const auto *callee = callinsn->getCalledFunction()) {
-      return callee->getName().starts_with(kCompareInstrinsicPrefix) ||
-             callee->getName().starts_with(kFlagIntrinsicPrefix);
+      const auto name = callee->getName();
+
+      // `__remill_compare_exchange_*` are atomic memory operations, not
+      // branch hints, even though they share the `__remill_compare` prefix.
+      return (name.starts_with(kCompareInstrinsicPrefix) &&
+              !name.starts_with(kCompareExchangePrefix)) ||
+             name.starts_with(kFlagIntrinsicPrefix);
     }
 
     return false;
