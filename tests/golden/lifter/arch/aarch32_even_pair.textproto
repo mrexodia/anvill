@@ -1,0 +1,22 @@
+# AArch32 (base AAPCS): a 64-bit argument starts at an even register, so
+# `b` is in R2:R3 and R1 is unused. Previously `b` was taken from R1:R2.
+#   int f(int a, long long b) { return a + (int)b; }
+#   401000: e0800002 add r0, r0, r2
+#   401004: e12fff1e bx lr
+# RUN: --add_names
+arch: ARCH_AARCH32
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    type {
+      function {
+        return_type { base: BT_I32 }
+        arguments { base: BT_I32 }
+        arguments { base: BT_I64 }
+      }
+    }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x02\x00\x80\xe0\x1e\xff\x2f\xe1" }
+symbols { name: "f" address: 0x401000 }

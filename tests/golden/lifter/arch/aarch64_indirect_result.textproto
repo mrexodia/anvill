@@ -1,0 +1,26 @@
+# AArch64 result larger than 16 bytes: the caller passes the address of the
+# result buffer in X8, so the lifted native function takes a hidden first
+# `ptr` parameter and returns void. Previously such a result could not be
+# allocated at all.
+#   struct S { long a, b, c; };
+#   struct S make(long x, long y) { return (struct S){x, y, x}; }
+#   401000: a9000500 stp x0, x1, [x8]
+#   401004: f9000900 str x0, [x8, #0x10]
+#   401008: d65f03c0 ret
+# RUN: --add_names
+arch: ARCH_AARCH64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    type {
+      function {
+        return_type { struct { members { base: BT_I64 } members { base: BT_I64 } members { base: BT_I64 } } }
+        arguments { base: BT_I64 }
+        arguments { base: BT_I64 }
+      }
+    }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x00\x05\x00\xa9\x00\x09\x00\xf9\xc0\x03\x5f\xd6" }
+symbols { name: "make" address: 0x401000 }
