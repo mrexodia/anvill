@@ -250,6 +250,12 @@ void OptimizeModule(const EntityLifter &lifter, llvm::Module &module) {
   second_fpm.addPass(llvm::DCEPass());
 
 
+  // NOTE: This appends to the *same* module pass manager, so this second
+  //       `run` executes GlobalOpt, GlobalDCE, StripDeadDebugInfo and the
+  //       whole first function pipeline again before `second_fpm`. That
+  //       second round is relied upon: it removes the stack frames left
+  //       around calls and the dead blocks left by switch lowering (see the
+  //       tests/golden/lifter outputs), so it is kept deliberately.
   mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(second_fpm)));
   mpm.run(module, mam);
 
