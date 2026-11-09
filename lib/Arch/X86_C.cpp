@@ -309,16 +309,18 @@ X86_C::BindParameters(llvm::Function &function, bool injected_sret,
 
   const auto esp_reg = arch->RegisterByName("ESP");
 
-  // If there is an injected sret (an implicit sret) then we need to allocate
-  // the first parameter to the sret struct. The type of said sret parameter
-  // will be the return type of the function.
+  // If the return value is returned in memory, then the caller passes a
+  // hidden pointer to its storage as the first stack argument. (Previously
+  // this parameter was typed as the returned aggregate itself, which also
+  // shifted every following argument by the aggregate's size.)
   if (injected_sret) {
     auto &decl = parameter_declarations.emplace_back();
 
-    decl.type = function.getReturnType();
+    decl.name = "__struct_ret_ptr";
+    decl.type = llvm::PointerType::get(function.getContext(), 0);
     decl.mem_offset = static_cast<int64_t>(stack_offset);
     decl.mem_reg = esp_reg;
-    stack_offset += dl.getTypeAllocSize(decl.type);
+    stack_offset += 4u;
   }
 
   for (auto &argument : function.args()) {
@@ -326,10 +328,12 @@ X86_C::BindParameters(llvm::Function &function, bool injected_sret,
 
     declaration.type = argument.getType();
 
-    // Since there are no registers, just allocate from the stack
+    // Every stack argument occupies a whole number of 4-byte slots.
+    // (Previously the exact allocation size was used, so an `i8` followed
+    // by an `i16` were at +8 and +9.)
     declaration.mem_offset = static_cast<int64_t>(stack_offset);
     declaration.mem_reg = esp_reg;
-    stack_offset += dl.getTypeAllocSize(argument.getType());
+    stack_offset += llvm::alignTo(dl.getTypeAllocSize(argument.getType()), 4u);
 
     // Get a name for the IR parameter.
     // Need to add 1 because param_names uses logical numbering, but

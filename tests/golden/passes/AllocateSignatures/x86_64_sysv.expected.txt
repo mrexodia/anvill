@@ -1,0 +1,248 @@
+@ints i32 (i32, i8, i16, i64, ptr, i32, i32, i32) cc 0
+  abi type: i32 (i32, i8, i16, i64, ptr, i32, i32, i32)
+  calling convention: 78
+  param a: EDI : i32
+  param b: SIL : i8
+  param c: DX : i16
+  param d: RCX : i64
+  param e: R8 : ptr
+  param f: R9D : i32
+  param g: [RSP + 8] : i32
+  param h: [RSP + 16] : i32
+  return: RAX : i32
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@floats double (float, double, i32) cc 0
+  abi type: double (float, double, i32)
+  calling convention: 78
+  param a: XMM0 : float
+  param b: XMM1 : double
+  param c: EDI : i32
+  return: XMM0 : double
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@many_doubles double (double, double, double, double, double, double, double, double, double, double) cc 0
+  abi type: double (double, double, double, double, double, double, double, double, double, double)
+  calling convention: 78
+  param param0: XMM0 : double
+  param param1: XMM1 : double
+  param param2: XMM2 : double
+  param param3: XMM3 : double
+  param param4: XMM4 : double
+  param param5: XMM5 : double
+  param param6: XMM6 : double
+  param param7: XMM7 : double
+  param param8: [RSP + 8] : double
+  param param9: [RSP + 16] : double
+  return: XMM0 : double
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@ret_mixed { i64, double } (i32, float, ptr) cc 0
+  abi type: { i64, double } (i32, float, ptr)
+  calling convention: 78
+  param a: EDI : i32
+  param b: XMM0 : float
+  param c: RSI : ptr
+  return: RAX : i64
+  return: XMM0 : double
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@ret_two_longs { i64, i64 } (i64) cc 0
+  abi type: { i64, i64 } (i64)
+  calling convention: 78
+  param a: RDI : i64
+  return: RAX : i64
+  return: RDX : i64
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@ret_three_longs { i64, i64, i64 } () cc 0
+  abi type: ptr (ptr)
+  calling convention: 78
+  param __struct_ret_ptr: RDI : ptr
+  return: RAX : ptr
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@wide i128 (i128) cc 0
+  abi type: { i64, i64 } (i64, i64)
+  calling convention: 78
+  param a0: RDI : i64
+  param a1: RSI : i64
+  return: RAX : i64
+  return: RDX : i64
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@struct_arg void ({ i32, i32 }) cc 0
+  abi type: void (i64)
+  calling convention: 78
+  param s: RDI : i64
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@long_double x86_fp80 (x86_fp80) cc 0
+  abi type: x86_fp80 (x86_fp80)
+  calling convention: 78
+  param a: [RSP + 8] : x86_fp80
+  return: ST0 : x86_fp80
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@variadic i32 (ptr, ...) cc 0
+  abi type: i32 (ptr, ...)
+  calling convention: 78
+  param fmt: RDI : ptr
+  return: RAX : i32
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@seven_longs void ({ i64, i64, i64, i64, i64, i64, i64 }, i32) cc 0
+  abi type: void ({ i64, i64, i64, i64, i64, i64, i64 }, i32)
+  calling convention: 78
+  param big: [RSP + 8] : { i64, i64, i64, i64, i64, i64, i64 }
+  param after: EDI : i32
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@sret void (ptr, i32) cc 0
+  abi type: ptr (ptr, i32)
+  calling convention: 78
+  param out: RDI : ptr
+  param x: ESI : i32
+  return: RAX : ptr
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@explicit_cc void (i32) cc 78
+  abi type: void (i32)
+  calling convention: 78
+  param x: EDI : i32
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@no_return void () cc 0
+  abi type: void ()
+  calling convention: 78
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@ret_three_floats { float, float, float } () cc 0
+  abi type: { <2 x float>, float } ()
+  calling convention: 78
+  return: XMM0 : <2 x float>
+  return: XMM1 : float
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@ret_two_doubles { double, double } ({ double, double }) cc 0
+  abi type: { double, double } (double, double)
+  calling convention: 78
+  param p0: XMM0 : double
+  param p1: XMM1 : double
+  return: XMM0 : double
+  return: XMM1 : double
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@ret_two_bytes { i8, i8 } ({ i8, i8 }) cc 0
+  abi type: i16 (i16)
+  calling convention: 78
+  param p: DI : i16
+  return: AX : i16
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@ret_int_float { i32, float } ({ i32, float }) cc 0
+  abi type: i64 (i64)
+  calling convention: 78
+  param p: RDI : i64
+  return: RAX : i64
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@ret_array [2 x i32] ([2 x i32]) cc 0
+  abi type: i64 (i64)
+  calling convention: 78
+  param p: RDI : i64
+  return: RAX : i64
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@ret_struct_long_double { x86_fp80 } ({ x86_fp80 }) cc 0
+  abi type: x86_fp80 ({ x86_fp80 })
+  calling convention: 78
+  param p: [RSP + 8] : { x86_fp80 }
+  return: ST0 : x86_fp80
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@ret_i256 i256 (i256) cc 0
+  abi type: ptr (ptr, i256)
+  calling convention: 78
+  param __struct_ret_ptr: RDI : ptr
+  param a: [RSP + 8] : i256
+  return: RAX : ptr
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@regs_exhausted void (i64, i64, i64, i64, i64, { i64, i64 }, i64) cc 0
+  abi type: void (i64, i64, i64, i64, i64, { i64, i64 }, i64)
+  calling convention: 78
+  param a: RDI : i64
+  param b: RSI : i64
+  param c: RDX : i64
+  param d: RCX : i64
+  param e: R8 : i64
+  param pair: [RSP + 8] : { i64, i64 }
+  param f: R9 : i64
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@aligned_stack void (i64, i64, i64, i64, i64, i64, i32, i128, x86_fp80, i8) cc 0
+  abi type: void (i64, i64, i64, i64, i64, i64, i32, i128, x86_fp80, i8)
+  calling convention: 78
+  param a: RDI : i64
+  param b: RSI : i64
+  param c: RDX : i64
+  param d: RCX : i64
+  param e: R8 : i64
+  param f: R9 : i64
+  param g: [RSP + 8] : i32
+  param h: [RSP + 24] : i128
+  param i: [RSP + 40] : x86_fp80
+  param j: [RSP + 56] : i8
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@float_vector <4 x float> (<4 x float>, <2 x double>) cc 0
+  abi type: <4 x float> (<4 x float>, <2 x double>)
+  calling convention: 78
+  param v: XMM0 : <4 x float>
+  param w: XMM1 : <2 x double>
+  return: XMM0 : <4 x float>
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@stdcall_on_amd64 i32 (i32, i32) cc 64
+  abi type: i32 (i32, i32)
+  calling convention: 78
+  param a: EDI : i32
+  param b: ESI : i32
+  return: RAX : i32
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@fastcall_on_amd64 i32 (i32, i32) cc 65
+  abi type: i32 (i32, i32)
+  calling convention: 78
+  param a: EDI : i32
+  param b: ESI : i32
+  return: RAX : i32
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+

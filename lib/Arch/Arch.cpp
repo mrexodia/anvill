@@ -120,6 +120,8 @@ CallingConvention::CreateCCFromArchAndID(
         return CreateX86_64_SysV(arch);
       } else if (arch->IsAArch64()) {
         return CreateAArch64_C(arch);
+      } else if (arch->IsAArch32()) {
+        return CreateAArch32_C(arch);
       } else if (arch->IsSPARC32()) {
         return CreateSPARC32_C(arch);
       } else if (arch->IsSPARC64()) {
@@ -132,7 +134,10 @@ CallingConvention::CreateCCFromArchAndID(
         return CreateX86_StdCall(arch);
 
       } else if (arch->IsAMD64()) {
-        return CreateX86_C(arch);  // Ignored on AMD64.
+        // These conventions are ignored on AMD64 (as by compilers): use the
+        // SysV convention. (Previously this used the 32-bit cdecl
+        // allocator, with ESP-relative 4-byte stack slots.)
+        return CreateX86_64_SysV(arch);
       }
       break;
 
@@ -141,7 +146,10 @@ CallingConvention::CreateCCFromArchAndID(
         return CreateX86_FastCall(arch);
 
       } else if (arch->IsAMD64()) {
-        return CreateX86_C(arch);  // Ignored on AMD64.
+        // These conventions are ignored on AMD64 (as by compilers): use the
+        // SysV convention. (Previously this used the 32-bit cdecl
+        // allocator, with ESP-relative 4-byte stack slots.)
+        return CreateX86_64_SysV(arch);
       }
       break;
 
@@ -150,7 +158,10 @@ CallingConvention::CreateCCFromArchAndID(
         return CreateX86_ThisCall(arch);
 
       } else if (arch->IsAMD64()) {
-        return CreateX86_C(arch);  // Ignored on AMD64.
+        // These conventions are ignored on AMD64 (as by compilers): use the
+        // SysV convention. (Previously this used the 32-bit cdecl
+        // allocator, with ESP-relative 4-byte stack slots.)
+        return CreateX86_64_SysV(arch);
       }
       break;
 

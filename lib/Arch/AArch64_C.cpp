@@ -11,133 +11,183 @@
 #include <remill/Arch/Arch.h>
 #include <remill/Arch/Name.h>
 
+#include <algorithm>
+#include <optional>
+#include <string>
+
 #include "AllocationState.h"
 #include "Arch.h"
 
 namespace anvill {
 namespace {
 
-static const std::vector<RegisterConstraint> kParamRegConstraints = {
-    RegisterConstraint({VariantConstraint("W0", kTypeIntegral, kMaxBit32),
-                        VariantConstraint("X0", kTypeIntegral, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("W1", kTypeIntegral, kMaxBit32),
-                        VariantConstraint("X1", kTypeIntegral, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("W2", kTypeIntegral, kMaxBit32),
-                        VariantConstraint("X2", kTypeIntegral, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("W3", kTypeIntegral, kMaxBit32),
-                        VariantConstraint("X3", kTypeIntegral, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("W4", kTypeIntegral, kMaxBit32),
-                        VariantConstraint("X4", kTypeIntegral, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("W5", kTypeIntegral, kMaxBit32),
-                        VariantConstraint("X5", kTypeIntegral, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("W6", kTypeIntegral, kMaxBit32),
-                        VariantConstraint("X6", kTypeIntegral, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("W7", kTypeIntegral, kMaxBit32),
-                        VariantConstraint("X7", kTypeIntegral, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("V0", kTypeIntegral, kMaxBit128)}),
-    RegisterConstraint({VariantConstraint("V1", kTypeIntegral, kMaxBit128)}),
-    RegisterConstraint({VariantConstraint("V2", kTypeIntegral, kMaxBit128)}),
-    RegisterConstraint({VariantConstraint("V3", kTypeIntegral, kMaxBit128)}),
-    RegisterConstraint({VariantConstraint("V4", kTypeIntegral, kMaxBit128)}),
-    RegisterConstraint({VariantConstraint("V5", kTypeIntegral, kMaxBit128)}),
-    RegisterConstraint({VariantConstraint("V6", kTypeIntegral, kMaxBit128)}),
-    RegisterConstraint({VariantConstraint("V7", kTypeIntegral, kMaxBit128)}),
+// Parameter and return value locations follow the AAPCS64 (the "Procedure
+// Call Standard for the Arm 64-bit Architecture"), section 6.8:
+//
+//  - Integers of at most 64 bits and pointers use the next general purpose
+//    register (`W<n>` for values of at most 32 bits, `X<n>` otherwise), from
+//    X0-X7. A 128-bit integer uses an even-numbered pair `X<2n>`, `X<2n+1>`.
+//  - Floating-point values and short vectors use the next SIMD register from
+//    V0-V7, named by size: `H<n>` (16 bits), `S<n>` (32), `D<n>` (64),
+//    `Q<n>` (128).
+//  - A homogeneous floating-point aggregate (HFA: 1-4 members of the same
+//    floating-point type) uses consecutive SIMD registers, one per member.
+//  - Other aggregates of at most 16 bytes use one or two general purpose
+//    registers (an even-numbered pair if their alignment is 16); larger
+//    aggregates are passed by reference, i.e. as a pointer.
+//  - Values that do not fit in the remaining registers go on the stack,
+//    in 8-byte aligned slots (16-byte aligned for 16-byte aligned values);
+//    once a class of registers is exhausted, it stays exhausted.
+//  - Results that would be passed in memory are returned through a buffer
+//    whose address the caller passes in X8.
+//
+// (Previously the generic allocator was used. Its constraint list included
+// V0-V7 as *integer* registers, so a ninth integer argument went to `V0`, an
+// `i128` argument went to `V0`, an `i128` result was typed as two `i32`s,
+// `sret` pointers went to X0 instead of X8, and aggregates larger than the
+// available registers were rejected.)
 
-    RegisterConstraint({VariantConstraint("H0", kTypeFloat, kMaxBit16),
-                        VariantConstraint("S0", kTypeFloat, kMaxBit32),
-                        VariantConstraint("D0", kTypeFloat, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("H1", kTypeFloat, kMaxBit16),
-                        VariantConstraint("S1", kTypeFloat, kMaxBit32),
-                        VariantConstraint("D1", kTypeFloat, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("H2", kTypeFloat, kMaxBit16),
-                        VariantConstraint("S2", kTypeFloat, kMaxBit32),
-                        VariantConstraint("D2", kTypeFloat, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("H3", kTypeFloat, kMaxBit16),
-                        VariantConstraint("S3", kTypeFloat, kMaxBit32),
-                        VariantConstraint("D3", kTypeFloat, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("H4", kTypeFloat, kMaxBit16),
-                        VariantConstraint("S4", kTypeFloat, kMaxBit32),
-                        VariantConstraint("D4", kTypeFloat, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("H5", kTypeFloat, kMaxBit16),
-                        VariantConstraint("S5", kTypeFloat, kMaxBit32),
-                        VariantConstraint("D5", kTypeFloat, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("H6", kTypeFloat, kMaxBit16),
-                        VariantConstraint("S6", kTypeFloat, kMaxBit32),
-                        VariantConstraint("D6", kTypeFloat, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("H7", kTypeFloat, kMaxBit16),
-                        VariantConstraint("S7", kTypeFloat, kMaxBit32),
-                        VariantConstraint("D7", kTypeFloat, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("Q0", kTypeFloat, kMaxBit128)}),
-    RegisterConstraint({VariantConstraint("Q1", kTypeFloat, kMaxBit128)}),
-    RegisterConstraint({VariantConstraint("Q2", kTypeFloat, kMaxBit128)}),
-    RegisterConstraint({VariantConstraint("Q3", kTypeFloat, kMaxBit128)}),
-    RegisterConstraint({VariantConstraint("Q4", kTypeFloat, kMaxBit128)}),
-    RegisterConstraint({VariantConstraint("Q5", kTypeFloat, kMaxBit128)}),
-    RegisterConstraint({VariantConstraint("Q6", kTypeFloat, kMaxBit128)}),
-    RegisterConstraint({VariantConstraint("Q7", kTypeFloat, kMaxBit128)}),
+static llvm::Type *IntegerOfBytes(llvm::LLVMContext &context, uint64_t bytes) {
+  if (bytes <= 1) {
+    return llvm::Type::getInt8Ty(context);
+  } else if (bytes <= 2) {
+    return llvm::Type::getInt16Ty(context);
+  } else if (bytes <= 4) {
+    return llvm::Type::getInt32Ty(context);
+  } else {
+    return llvm::Type::getInt64Ty(context);
+  }
+}
 
+// Flattens an aggregate into its leaf types.
+static void FlattenLeaves(llvm::Type *type,
+                          std::vector<llvm::Type *> &leaves) {
+  if (auto st = llvm::dyn_cast<llvm::StructType>(type)) {
+    for (auto elem : st->elements()) {
+      FlattenLeaves(elem, leaves);
+    }
+  } else if (auto at = llvm::dyn_cast<llvm::ArrayType>(type)) {
+    for (auto i = 0u; i < at->getNumElements(); ++i) {
+      FlattenLeaves(at->getElementType(), leaves);
+    }
+  } else {
+    leaves.push_back(type);
+  }
+}
+
+// Returns the member type of a homogeneous floating-point aggregate, and the
+// number of members, or `nullptr` if `type` is not an HFA.
+static std::pair<llvm::Type *, unsigned> GetHFA(llvm::Type *type) {
+  std::vector<llvm::Type *> leaves;
+  FlattenLeaves(type, leaves);
+  if (leaves.empty() || leaves.size() > 4u ||
+      !leaves.front()->isFloatingPointTy() || leaves.front()->isX86_FP80Ty()) {
+    return {nullptr, 0u};
+  }
+  for (auto leaf : leaves) {
+    if (leaf != leaves.front()) {
+      return {nullptr, 0u};
+    }
+  }
+  return {leaves.front(), static_cast<unsigned>(leaves.size())};
+}
+
+static bool IsSIMDScalar(llvm::Type *type) {
+  if (type->isHalfTy() || type->isBFloatTy() || type->isFloatTy() ||
+      type->isDoubleTy() || type->isFP128Ty()) {
+    return true;
+  }
+  if (auto vt = llvm::dyn_cast<llvm::FixedVectorType>(type)) {
+    const auto bits = vt->getPrimitiveSizeInBits().getFixedValue();
+    return bits == 64u || bits == 128u;
+  }
+  return false;
+}
+
+static std::string SIMDRegisterName(llvm::Type *type, unsigned num) {
+  const auto bits = type->getPrimitiveSizeInBits().getFixedValue();
+  const char *prefix = bits <= 16 ? "H" : bits <= 32 ? "S" : bits <= 64 ? "D"
+                                                                        : "Q";
+  return prefix + std::to_string(num);
+}
+
+static std::string GPRName(llvm::Type *type, unsigned num) {
+  const auto is_small = type->isIntegerTy() && type->getIntegerBitWidth() <= 32;
+  return (is_small ? "W" : "X") + std::to_string(num);
+}
+
+// Next General-purpose Register Number, Next SIMD and Floating-point Register
+// Number (AAPCS64 terminology).
+struct AAPCS64State {
+  unsigned ngrn{0};
+  unsigned nsrn{0};
 };
 
-// TODO(pag): Probably totally broken.
-static const std::vector<RegisterConstraint> kReturnRegConstraints = {
-    RegisterConstraint({VariantConstraint("W0", kTypeIntegral, kMaxBit32),
-                        VariantConstraint("X0", kTypeIntegral, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("W1", kTypeIntegral, kMaxBit32),
-                        VariantConstraint("X1", kTypeIntegral, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("W2", kTypeIntegral, kMaxBit32),
-                        VariantConstraint("X2", kTypeIntegral, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("W3", kTypeIntegral, kMaxBit32),
-                        VariantConstraint("X3", kTypeIntegral, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("W4", kTypeIntegral, kMaxBit32),
-                        VariantConstraint("X4", kTypeIntegral, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("W5", kTypeIntegral, kMaxBit32),
-                        VariantConstraint("X5", kTypeIntegral, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("W6", kTypeIntegral, kMaxBit32),
-                        VariantConstraint("X6", kTypeIntegral, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("W7", kTypeIntegral, kMaxBit32),
-                        VariantConstraint("X7", kTypeIntegral, kMaxBit64)}),
+// Tries to assign `type` to registers. Returns `std::nullopt` and updates the
+// state as the AAPCS64 requires when `type` must go on the stack.
+static std::optional<std::vector<ValueDecl>>
+AssignAAPCS64(const remill::Arch *arch, const llvm::DataLayout &dl,
+              AAPCS64State &state, llvm::Type *type) {
+  auto &context = type->getContext();
+  std::vector<ValueDecl> ret;
+  auto add = [&](const std::string &name, llvm::Type *ty) {
+    auto &decl = ret.emplace_back();
+    decl.reg = arch->RegisterByName(name);
+    CHECK(decl.reg) << "Missing AArch64 register " << name;
+    decl.type = ty;
+  };
 
-    RegisterConstraint({VariantConstraint("H0", kTypeFloat, kMaxBit16),
-                        VariantConstraint("S0", kTypeFloat, kMaxBit32),
-                        VariantConstraint("D0", kTypeFloat, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("H1", kTypeFloat, kMaxBit16),
-                        VariantConstraint("S1", kTypeFloat, kMaxBit32),
-                        VariantConstraint("D1", kTypeFloat, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("H2", kTypeFloat, kMaxBit16),
-                        VariantConstraint("S2", kTypeFloat, kMaxBit32),
-                        VariantConstraint("D2", kTypeFloat, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("H3", kTypeFloat, kMaxBit16),
-                        VariantConstraint("S3", kTypeFloat, kMaxBit32),
-                        VariantConstraint("D3", kTypeFloat, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("H4", kTypeFloat, kMaxBit16),
-                        VariantConstraint("S4", kTypeFloat, kMaxBit32),
-                        VariantConstraint("D4", kTypeFloat, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("H5", kTypeFloat, kMaxBit16),
-                        VariantConstraint("S5", kTypeFloat, kMaxBit32),
-                        VariantConstraint("D5", kTypeFloat, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("H6", kTypeFloat, kMaxBit16),
-                        VariantConstraint("S6", kTypeFloat, kMaxBit32),
-                        VariantConstraint("D6", kTypeFloat, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("H7", kTypeFloat, kMaxBit16),
-                        VariantConstraint("S7", kTypeFloat, kMaxBit32),
-                        VariantConstraint("D7", kTypeFloat, kMaxBit64)}),
-};
-
-// Used to split things like `i64`s into multiple `i32`s.
-static llvm::Type *IntegerTypeSplitter(llvm::Type *type) {
-  auto int_ty = llvm::dyn_cast<llvm::IntegerType>(type);
-  if (!int_ty) {
-    return nullptr;
+  if (IsSIMDScalar(type)) {
+    if (state.nsrn < 8u) {
+      add(SIMDRegisterName(type, state.nsrn++), type);
+      return ret;
+    }
+    return std::nullopt;
   }
 
-  auto width = int_ty->getPrimitiveSizeInBits();
-  if (width <= 64) {
-    return nullptr;
+  if (type->isStructTy() || type->isArrayTy()) {
+    if (auto [member, count] = GetHFA(type); member) {
+      if (state.nsrn + count <= 8u) {
+        for (auto i = 0u; i < count; ++i) {
+          add(SIMDRegisterName(member, state.nsrn++), member);
+        }
+        return ret;
+      }
+      state.nsrn = 8u;
+      return std::nullopt;
+    }
   }
 
-  auto num_elements = (width + 63) / 64;
-  auto i64_ty = llvm::Type::getInt64Ty(type->getContext());
-  return llvm::ArrayType::get(i64_ty, num_elements);
+  // General purpose registers: integers, pointers and small aggregates.
+  const auto size = dl.getTypeAllocSize(type).getFixedValue();
+  if (type->isPointerTy() ||
+      (type->isIntegerTy() && type->getIntegerBitWidth() <= 64)) {
+    if (state.ngrn < 8u) {
+      add(GPRName(type, state.ngrn++), type);
+      return ret;
+    }
+    return std::nullopt;
+  }
+
+  if (size > 16u) {
+    return std::nullopt;  // Handled by the caller (by reference or memory).
+  }
+
+  auto num_regs = static_cast<unsigned>((size + 7u) / 8u);
+  if (dl.getABITypeAlign(type).value() == 16u ||
+      (type->isIntegerTy() && type->getIntegerBitWidth() > 64)) {
+    state.ngrn = (state.ngrn + 1u) & ~1u;
+  }
+  if (state.ngrn + num_regs > 8u) {
+    state.ngrn = 8u;
+    return std::nullopt;
+  }
+  for (auto i = 0u; i < num_regs; ++i) {
+    const auto chunk = std::min<uint64_t>(8u, size - i * 8u);
+    auto chunk_type = IntegerOfBytes(context, chunk);
+    add(GPRName(chunk_type, state.ngrn++), chunk_type);
+  }
+  return ret;
 }
 
 }  // namespace
@@ -157,9 +207,6 @@ class AArch64_C : public CallingConvention {
 
   llvm::Error BindReturnValues(llvm::Function &function, bool &injected_sret,
                                std::vector<ValueDecl> &ret_decls);
-
-  const std::vector<RegisterConstraint> &parameter_register_constraints;
-  const std::vector<RegisterConstraint> &return_register_constraints;
 };
 
 std::unique_ptr<CallingConvention>
@@ -168,9 +215,7 @@ CallingConvention::CreateAArch64_C(const remill::Arch *arch) {
 }
 
 AArch64_C::AArch64_C(const remill::Arch *arch)
-    : CallingConvention(llvm::CallingConv::C, arch),
-      parameter_register_constraints(kParamRegConstraints),
-      return_register_constraints(kReturnRegConstraints) {}
+    : CallingConvention(llvm::CallingConv::C, arch) {}
 
 // Allocates the elements of the function signature of func to memory or
 // registers. This includes parameters/arguments, return values, and the return
@@ -206,15 +251,12 @@ AArch64_C::BindReturnValues(llvm::Function &function, bool &injected_sret,
                             std::vector<anvill::ValueDecl> &ret_values) {
 
   llvm::Type *ret_type = function.getReturnType();
-  LOG(INFO) << "Binding on return " << remill::LLVMThingToString(ret_type);
   injected_sret = false;
 
-  // If there is an sret parameter then it is a special case.
+  // If there is an sret parameter then its address is passed in X8 (see
+  // BindParameters). The callee is not required to preserve X8, so there is
+  // no return value. (Previously X8 was also treated as the return value.)
   if (function.hasStructRetAttr()) {
-    auto &value_declaration = ret_values.emplace_back();
-
-    value_declaration.type = llvm::PointerType::get(function.getContext(), 0);
-
     if (!ret_type->isVoidTy()) {
       return llvm::createStringError(
           std::errc::invalid_argument,
@@ -222,184 +264,108 @@ AArch64_C::BindReturnValues(llvm::Function &function, bool &injected_sret,
           function.getName().str().c_str(),
           remill::LLVMThingToString(ret_type).c_str());
     }
-
-    // Indirect return values are passed by pointer through `X8`.
-    value_declaration.reg = arch->RegisterByName("X8");
     return llvm::Error::success();
   }
 
-  switch (ret_type->getTypeID()) {
-    case llvm::Type::VoidTyID: return llvm::Error::success();
-
-    case llvm::Type::IntegerTyID: {
-      const auto *int_ty = llvm::dyn_cast<llvm::IntegerType>(ret_type);
-      const auto int32_ty = llvm::Type::getInt32Ty(int_ty->getContext());
-      const auto bit_width = int_ty->getBitWidth();
-      if (bit_width <= 32) {
-        auto &value_declaration = ret_values.emplace_back();
-        value_declaration.reg = arch->RegisterByName("X0");
-        value_declaration.type = ret_type;
-        return llvm::Error::success();
-
-      } else if (bit_width <= 64) {
-        auto &value_declaration = ret_values.emplace_back();
-        value_declaration.reg = arch->RegisterByName("X0");
-        value_declaration.type = ret_type;
-        return llvm::Error::success();
-
-      // Split the integer across `X7:X0`. Experimentally, the largest
-      // returnable integer is 512 bits in size, any larger and RVO is used.
-      } else if (bit_width <= 512) {
-        const char *ret_names[] = {"X0", "X1", "X2", "X3",
-                                   "X4", "X5", "X6", "X7"};
-        for (auto i = 0u; i < 8 && (64 * i) < bit_width; ++i) {
-          auto &value_declaration = ret_values.emplace_back();
-          value_declaration.reg = arch->RegisterByName(ret_names[i]);
-          value_declaration.type = int32_ty;
-        }
-        return llvm::Error::success();
-
-      // The integer is too big to be split across registers, fall back to
-      // return-value optimization.
-      } else {
-        auto &value_declaration = ret_values.emplace_back();
-        value_declaration.type =
-            llvm::PointerType::get(function.getContext(), 0);
-        value_declaration.reg = arch->RegisterByName("X8");
-        return llvm::Error::success();
-      }
-    }
-
-    // Pointers always fit into `X0`.
-    case llvm::Type::PointerTyID: {
-      auto &value_declaration = ret_values.emplace_back();
-      value_declaration.reg = arch->RegisterByName("X0");
-      value_declaration.type = ret_type;
-      return llvm::Error::success();
-    }
-
-    case llvm::Type::HalfTyID: {
-      auto &value_declaration = ret_values.emplace_back();
-      value_declaration.reg = arch->RegisterByName("H0");
-      value_declaration.type = ret_type;
-      return llvm::Error::success();
-    }
-
-    case llvm::Type::FloatTyID: {
-      auto &value_declaration = ret_values.emplace_back();
-      value_declaration.reg = arch->RegisterByName("S0");
-      value_declaration.type = ret_type;
-      return llvm::Error::success();
-    }
-
-    case llvm::Type::DoubleTyID: {
-      auto &value_declaration = ret_values.emplace_back();
-      value_declaration.reg = arch->RegisterByName("D0");
-      value_declaration.type = ret_type;
-      return llvm::Error::success();
-    }
-
-    case llvm::Type::FP128TyID: {
-      auto &value_declaration = ret_values.emplace_back();
-      value_declaration.reg = arch->RegisterByName("Q0");
-      value_declaration.type = ret_type;
-      return llvm::Error::success();
-    }
-
-    // Try to split the composite type over registers, and fall back on RVO
-    // if it's not possible.
-    case llvm::Type::FixedVectorTyID:
-    case llvm::Type::ArrayTyID:
-    case llvm::Type::StructTyID: {
-      AllocationState alloc_ret(return_register_constraints, arch, this);
-      alloc_ret.config.type_splitter = IntegerTypeSplitter;
-      auto mapping = alloc_ret.TryRegisterAllocate(*ret_type);
-
-      // There is a valid split over registers, so add the mapping
-      if (mapping) {
-        return alloc_ret.CoalescePacking(mapping.value(), ret_values);
-
-      // Composite type splitting; Unlike with x86, LLVM doesn't naturally
-      // perform RVO on large structures returned by value from bitcode.
-      } else {
-        break;
-      }
-    }
-
-    default: break;
+  if (ret_type->isVoidTy()) {
+    return llvm::Error::success();
   }
 
-  return llvm::createStringError(
-      std::errc::invalid_argument,
-      "Could not allocate unsupported type '%s' to return register in function '%s'",
-      remill::LLVMThingToString(ret_type).c_str(),
-      function.getName().str().c_str());
+  // Results are returned in the registers in which they would be passed as
+  // the first argument; otherwise through a buffer whose address is in X8.
+  const auto &dl = function.getParent()->getDataLayout();
+  AAPCS64State state;
+  if (ret_type->isIntegerTy() && ret_type->getIntegerBitWidth() > 128u) {
+    // `_BitInt(N)` for N > 128 is returned in memory.
+  } else if (ret_type->isX86_FP80Ty()) {
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "Could not allocate unsupported type '%s' to return register in function '%s'",
+        remill::LLVMThingToString(ret_type).c_str(),
+        function.getName().str().c_str());
+  } else if (auto regs = AssignAAPCS64(arch, dl, state, ret_type)) {
+    ret_values.insert(ret_values.end(), regs->begin(), regs->end());
+    return llvm::Error::success();
+  }
+
+  // Indirect result: the caller passes the buffer's address in X8. The
+  // callee is not required to preserve X8, so there is no return value.
+  injected_sret = true;
+  return llvm::Error::success();
 }
 
 llvm::Error
 AArch64_C::BindParameters(llvm::Function &function, bool injected_sret,
                           std::vector<ParameterDecl> &parameter_declarations) {
-  CHECK(!injected_sret)
-      << "Injected struct returns are not supported on SPARC targets";
-
   const auto param_names = TryRecoverParamNames(function);
   const llvm::DataLayout &dl = function.getParent()->getDataLayout();
+  auto ptr_type = llvm::PointerType::get(function.getContext(), 0);
 
-  // Used to keep track of which registers have been allocated
-  AllocationState alloc_param(parameter_register_constraints, arch, this);
-  alloc_param.config.type_splitter = IntegerTypeSplitter;
-
-  unsigned stack_offset = 0;
+  AAPCS64State state;
+  uint64_t stack_offset = 0;
   const auto sp_reg = arch->RegisterByName("SP");
+
+  // The address of an indirect result is passed in X8, which is not one of
+  // the argument registers.
+  if (injected_sret) {
+    auto &decl = parameter_declarations.emplace_back();
+    decl.name = "__struct_ret_ptr";
+    decl.type = ptr_type;
+    decl.reg = arch->RegisterByName("X8");
+  }
 
   for (auto &argument : function.args()) {
     const auto &param_name = param_names[argument.getArgNo()];
-    const auto param_type = argument.getType();
+    auto param_type = argument.getType();
 
-    auto allocation = alloc_param.TryRegisterAllocate(*param_type);
+    // An explicit `sret` parameter is the indirect result address in X8.
+    if (argument.hasStructRetAttr()) {
+      auto &decl = parameter_declarations.emplace_back();
+      decl.name = param_name;
+      decl.type = param_type;
+      decl.reg = arch->RegisterByName("X8");
+      continue;
+    }
 
-    // Try to allocate from a register. If a register is not available then
-    // allocate from the stack.
-    if (allocation) {
-      auto prev_size = parameter_declarations.size();
+    // Aggregates larger than 16 bytes that are not HFAs, and integers wider
+    // than 128 bits, are copied by the caller and passed by reference.
+    const auto size = dl.getTypeAllocSize(param_type).getFixedValue();
+    if (((param_type->isStructTy() || param_type->isArrayTy()) &&
+         size > 16u && !GetHFA(param_type).first) ||
+        (param_type->isIntegerTy() && param_type->getIntegerBitWidth() > 128)) {
+      param_type = ptr_type;
+    }
 
-      for (const auto &param_decl : allocation.value()) {
-        auto &declaration = parameter_declarations.emplace_back();
-        declaration.type = param_decl.type;
-        if (param_decl.reg) {
-          declaration.reg = param_decl.reg;
-        } else {
-          declaration.mem_offset = param_decl.mem_offset;
-          declaration.mem_reg = param_decl.mem_reg;
-        }
+    if (auto regs = AssignAAPCS64(arch, dl, state, param_type)) {
+      const auto prev_size = parameter_declarations.size();
+      for (const auto &reg : *regs) {
+        auto &decl = parameter_declarations.emplace_back();
+        decl.reg = reg.reg;
+        decl.type = reg.type;
       }
-
-      // The parameter fit in one register / stack slot.
-      if ((prev_size + 1u) == parameter_declarations.size()) {
-        if (!param_name.empty()) {
-          parameter_declarations[prev_size].name = param_name;
-        }
-
-      // The parameter was spread across multiple registers.
+      if (regs->size() == 1u) {
+        parameter_declarations[prev_size].name = param_name;
       } else if (!param_name.empty()) {
-        for (auto i = 0u; i < (parameter_declarations.size() - prev_size);
-             ++i) {
+        for (auto i = 0u; i < regs->size(); ++i) {
           parameter_declarations[prev_size + i].name =
               param_name + std::to_string(i);
         }
       }
-
-    } else {
-      auto &declaration = parameter_declarations.emplace_back();
-      declaration.type = param_type;
-      declaration.mem_offset = static_cast<int64_t>(stack_offset);
-      declaration.mem_reg = sp_reg;
-      stack_offset += dl.getTypeAllocSize(argument.getType());
-
-      if (!param_name.empty()) {
-        declaration.name = param_name;
-      }
+      continue;
     }
+
+    // On the stack: 8-byte slots, 16-byte aligned for 16-byte aligned
+    // values.
+    const auto align =
+        std::max<uint64_t>(8u, dl.getABITypeAlign(param_type).value());
+    stack_offset = llvm::alignTo(stack_offset, std::min<uint64_t>(align, 16u));
+
+    auto &decl = parameter_declarations.emplace_back();
+    decl.name = param_name;
+    decl.type = param_type;
+    decl.mem_reg = sp_reg;
+    decl.mem_offset = static_cast<int64_t>(stack_offset);
+    stack_offset += llvm::alignTo(dl.getTypeAllocSize(param_type), 8u);
   }
 
   return llvm::Error::success();

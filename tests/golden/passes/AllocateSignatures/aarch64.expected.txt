@@ -1,0 +1,137 @@
+@ints i32 (i32, float, ptr) cc 0
+  abi type: i32 (i32, float, ptr)
+  calling convention: 0
+  param a: W0 : i32
+  param b: S0 : float
+  param c: X1 : ptr
+  return: W0 : i32
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@nine_longs i64 (i64, i64, i64, i64, i64, i64, i64, i64, i64) cc 0
+  abi type: i64 (i64, i64, i64, i64, i64, i64, i64, i64, i64)
+  calling convention: 0
+  param param0: X0 : i64
+  param param1: X1 : i64
+  param param2: X2 : i64
+  param param3: X3 : i64
+  param param4: X4 : i64
+  param param5: X5 : i64
+  param param6: X6 : i64
+  param param7: X7 : i64
+  param param8: [SP] : i64
+  return: X0 : i64
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@ret_mixed { i64, double } (i32) cc 0
+  abi type: { i64, i64 } (i32)
+  calling convention: 0
+  param a: W0 : i32
+  return: X0 : i64
+  return: X1 : i64
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@wide i128 (i128) cc 0
+  abi type: { i64, i64 } (i64, i64)
+  calling convention: 0
+  param a0: X0 : i64
+  param a1: X1 : i64
+  return: X0 : i64
+  return: X1 : i64
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@doubles double (double, float, half) cc 0
+  abi type: double (double, float, half)
+  calling convention: 0
+  param a: D0 : double
+  param b: S1 : float
+  param c: H2 : half
+  return: D0 : double
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@sret void (ptr) cc 0
+  abi type: void (ptr)
+  calling convention: 0
+  param out: X8 : ptr
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@hfa { float, float, float } ({ float, float, float }, [4 x double], double, { float, float }) cc 0
+  abi type: { float, float, float } (float, float, float, double, double, double, double, double, { float, float })
+  calling convention: 0
+  param a0: S0 : float
+  param a1: S1 : float
+  param a2: S2 : float
+  param b0: D3 : double
+  param b1: D4 : double
+  param b2: D5 : double
+  param b3: D6 : double
+  param c: D7 : double
+  param d: [SP] : { float, float }
+  return: S0 : float
+  return: S1 : float
+  return: S2 : float
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@big_struct { i64, i64, i64 } ({ i64, i64, i64 }, i32) cc 0
+  abi type: void (ptr, ptr, i32)
+  calling convention: 0
+  param __struct_ret_ptr: X8 : ptr
+  param a: X0 : ptr
+  param b: W1 : i32
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@pair_alignment void (i32, i128, { i64, i32 }, i64, i64, i64, { i64, i64 }, i32) cc 0
+  abi type: void (i32, i64, i64, i64, i64, i64, i64, i64, { i64, i64 }, i32)
+  calling convention: 0
+  param a: W0 : i32
+  param b0: X2 : i64
+  param b1: X3 : i64
+  param c0: X4 : i64
+  param c1: X5 : i64
+  param d: X6 : i64
+  param e: X7 : i64
+  param f: [SP] : i64
+  param g: [SP + 8] : { i64, i64 }
+  param h: [SP + 24] : i32
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@vectors <4 x float> (<4 x float>, <2 x float>) cc 0
+  abi type: <4 x float> (<4 x float>, <2 x float>)
+  calling convention: 0
+  param a: Q0 : <4 x float>
+  param b: D1 : <2 x float>
+  return: Q0 : <4 x float>
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@huge_int i256 (i256) cc 0
+  abi type: void (ptr, ptr)
+  calling convention: 0
+  param __struct_ret_ptr: X8 : ptr
+  param a: X0 : ptr
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+
+@stack_hfa void (double, double, double, double, double, double, double, { double, double }, float) cc 0
+  abi type: void (double, double, double, double, double, double, double, { double, double }, float)
+  calling convention: 0
+  param param0: D0 : double
+  param param1: D1 : double
+  param param2: D2 : double
+  param param3: D3 : double
+  param param4: D4 : double
+  param param5: D5 : double
+  param param6: D6 : double
+  param h: [SP] : { double, double }
+  param f: [SP + 16] : float
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+

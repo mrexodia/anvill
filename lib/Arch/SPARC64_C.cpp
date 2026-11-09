@@ -245,7 +245,7 @@ SPARC64_C::BindReturnValues(llvm::Function &function, bool &injected_sret,
 
     case llvm::Type::IntegerTyID: {
       const auto *int_ty = llvm::dyn_cast<llvm::IntegerType>(ret_type);
-      const auto int32_ty = llvm::Type::getInt32Ty(int_ty->getContext());
+      const auto int64_ty = llvm::Type::getInt64Ty(int_ty->getContext());
       const auto bit_width = int_ty->getBitWidth();
 
       if (bit_width <= 64) {
@@ -256,12 +256,15 @@ SPARC64_C::BindReturnValues(llvm::Function &function, bool &injected_sret,
 
       // Split the integer across `o5:o0`. Experimentally, the largest
       // returnable integer is 384 bits in size, any larger and LLVM crashes.
+      //
+      // Each part is a whole 64-bit register. (Previously each part was
+      // typed `i32`, dropping the upper half of every register.)
       } else if (bit_width <= 384) {
         const char *ret_names[] = {"o0", "o1", "o2", "o3", "o4", "o5"};
         for (auto i = 0u; i < 6 && (64 * i) < bit_width; ++i) {
           auto &value_declaration = ret_values.emplace_back();
           value_declaration.reg = arch->RegisterByName(ret_names[i]);
-          value_declaration.type = int32_ty;
+          value_declaration.type = int64_ty;
         }
         return llvm::Error::success();
       } else {

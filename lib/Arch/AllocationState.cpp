@@ -194,7 +194,18 @@ SizeAndType AllocationState::AssignSizeAndType(llvm::Type &type) {
 std::optional<std::vector<ValueDecl>>
 AllocationState::TryRegisterAllocate(llvm::Type &type) {
   if (type.isStructTy() || type.isArrayTy() || type.isVectorTy()) {
-    return TryCompositeRegisterAllocate(type);
+
+    // A composite that does not fit must not leave its partially allocated
+    // registers behind: the whole value goes to memory, and later values
+    // can still use those registers.
+    auto saved_reserved = reserved;
+    auto saved_fill = fill;
+    auto ret = TryCompositeRegisterAllocate(type);
+    if (!ret) {
+      reserved = std::move(saved_reserved);
+      fill = std::move(saved_fill);
+    }
+    return ret;
   } else {
     return TryBasicRegisterAllocate(type, std::nullopt);
   }
@@ -235,6 +246,8 @@ AllocationState::TryCompositeRegisterAllocate(llvm::Type &type) {
   } else if (auto vec = llvm::dyn_cast<llvm::FixedVectorType>(&type)) {
     if (auto inner = TryVectorRegisterAllocate(*vec); inner) {
       ret.insert(ret.end(), inner->begin(), inner->end());
+    } else {
+      return std::nullopt;
     }
   } else {
     LOG(FATAL) << "Trying to allocate for an unknown composite type: "
@@ -314,6 +327,18 @@ AllocationState::TryVectorRegisterAllocate(llvm::FixedVectorType &type) {
   std::vector<ValueDecl> ret;
   unsigned vec_size = type.getNumElements();
   const auto elem_type = type.getElementType();
+
+  // Floating-point vectors (e.g. `<4 x float>`, an SSE/NEON value) are
+  // allocated as a single value of the vector's width in a register that
+  // accepts floats or vectors. (Previously this aborted.)
+  if (elem_type->isFloatingPointTy()) {
+    const auto bits = type.getPrimitiveSizeInBits().getFixedValue();
+    const SizeConstraint sc =
+        bits <= 8 ? kMinBit8 : bits <= 16 ? kMinBit16 :
+        bits <= 32 ? kMinBit32 : bits <= 64 ? kMinBit64 :
+        bits <= 128 ? kMinBit128 : bits <= 256 ? kMinBit256 : kMinBit512;
+    return TryBasicRegisterAllocate(type, SizeAndType(sc, kTypeFloatOrVec));
+  }
 
   for (unsigned i = 0; i < vec_size; i++) {
 

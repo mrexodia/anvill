@@ -27,6 +27,7 @@
 //    is the permission (`r`, `rw`, `rx` or `rwx`).
 
 #include <anvill/CrossReferenceResolver.h>
+#include <anvill/Declarations.h>
 #include <anvill/Lifters.h>
 #include <anvill/Optimize.h>
 #include <anvill/Passes/BranchAnalysis.h>
@@ -55,7 +56,9 @@
 #include <remill/Arch/Name.h>
 #include <remill/OS/OS.h>
 
+#include <functional>
 #include <map>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -289,6 +292,115 @@ int main(int argc, char *argv[]) {
   fam.registerPass([&] { return anvill::BranchAnalysis(); });
   fam.registerPass([&] { return anvill::JumpTableAnalysis(lifter); });
   pb.crossRegisterProxies(lam, fam, cam, mam);
+
+  // `--passes=AllocateSignatures` runs the calling-convention allocator on
+  // every function of the module and prints the resulting locations.
+  if (FLAGS_passes == "AllocateSignatures") {
+    std::error_code ec;
+    llvm::raw_fd_ostream os(FLAGS_o, ec);
+    if (ec) {
+      std::cerr << "Unable to open " << FLAGS_o << ": " << ec.message()
+                << "\n";
+      return EXIT_FAILURE;
+    }
+    // Unnamed identified structs (e.g. the ones the allocator creates for
+    // split return values) would print as `%"type 0x<address>"`, which is
+    // not deterministic; print their bodies instead.
+    std::function<void(llvm::Type *)> print_type = [&](llvm::Type *type) {
+      if (auto st = llvm::dyn_cast<llvm::StructType>(type);
+          st && !st->hasName() && !st->isOpaque()) {
+        os << (st->isPacked() ? "<{ " : "{ ");
+        auto sep = "";
+        for (auto elem : st->elements()) {
+          os << sep;
+          print_type(elem);
+          sep = ", ";
+        }
+        os << (st->isPacked() ? " }>" : " }");
+      } else if (auto at = llvm::dyn_cast<llvm::ArrayType>(type)) {
+        os << "[" << at->getNumElements() << " x ";
+        print_type(at->getElementType());
+        os << "]";
+      } else if (auto ft = llvm::dyn_cast<llvm::FunctionType>(type)) {
+        print_type(ft->getReturnType());
+        os << " (";
+        auto sep = "";
+        for (auto param : ft->params()) {
+          os << sep;
+          print_type(param);
+          sep = ", ";
+        }
+        if (ft->isVarArg()) {
+          os << sep << "...";
+        }
+        os << ")";
+      } else {
+        type->print(os);
+      }
+    };
+    auto print_loc = [&](const anvill::ValueDecl &val) {
+      if (val.reg) {
+        os << val.reg->name;
+      } else if (val.mem_reg) {
+        os << "[" << val.mem_reg->name;
+        if (val.mem_offset) {
+          os << (val.mem_offset < 0 ? " - " : " + ")
+             << (val.mem_offset < 0 ? -val.mem_offset : val.mem_offset);
+        }
+        os << "]";
+      } else if (val.mem_offset) {
+        os << "[" << val.mem_offset << "]";
+      } else {
+        os << "<none>";
+      }
+      os << " : ";
+      if (val.type) {
+        print_type(val.type);
+      } else {
+        os << "<no type>";
+      }
+    };
+    for (auto &func : *module) {
+      if (func.isIntrinsic()) {
+        continue;
+      }
+      os << "@" << func.getName() << " ";
+      func.getFunctionType()->print(os);
+      os << " cc " << func.getCallingConv() << "\n";
+      auto maybe_decl = anvill::FunctionDecl::Create(func, arch.get());
+      if (!maybe_decl.Succeeded()) {
+        os << "  error: " << maybe_decl.TakeError() << "\n\n";
+        continue;
+      }
+      const auto &decl = maybe_decl.Value();
+      os << "  abi type: ";
+      print_type(decl.type);
+      os << "\n  calling convention: " << decl.calling_convention << "\n";
+      for (const auto &param : decl.params) {
+        os << "  param " << (param.name.empty() ? "<unnamed>" : param.name)
+           << ": ";
+        print_loc(param);
+        os << "\n";
+      }
+      for (const auto &ret : decl.returns) {
+        os << "  return: ";
+        print_loc(ret);
+        os << "\n";
+      }
+      os << "  return address: ";
+      if (decl.return_address.type &&
+          decl.return_address.type->isVoidTy()) {
+        os << "<none>";
+      } else {
+        print_loc(decl.return_address);
+      }
+      os << "\n  stack pointer on return: "
+         << (decl.return_stack_pointer ? decl.return_stack_pointer->name
+                                       : std::string("<none>"))
+         << " + " << decl.return_stack_pointer_offset << "\n\n";
+    }
+    return EXIT_SUCCESS;
+  }
 
   // `--passes=OptimizeModule` runs anvill's whole optimization pipeline
   // (anvill::OptimizeModule) on the module instead of individual passes.

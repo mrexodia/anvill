@@ -9,7 +9,9 @@ Pass cases (`passes/**/<name>.ll`)
     The first lines may contain `; RUN: <anvill-opt flags>` (`%S` expands to
     the directory of the test case), e.g.
     `; RUN: --passes=RecoverBasicStackFrame --stack_init=zeroes`. The
-    transformed module is compared with `<name>.expected.ll`.
+    transformed module is compared with `<name>.expected.ll` (or, for
+    `--passes=AllocateSignatures`, the printed calling-convention
+    locations with `<name>.expected.txt`).
 
 Lifter cases (`lifter/**/<name>.textproto`)
     A text-format `specification.Specification`. Optional `# RUN: <flags>`
@@ -92,8 +94,11 @@ def run_pass_case(args, path, tmp):
     if proc.returncode != 0:
         print(proc.stderr[-4000:])
         return False
-    return compare(path.with_suffix(".expected.ll"), out.read_text(),
-                   args.update)
+    # Text reports (e.g. --passes=AllocateSignatures) are compared with a
+    # `.expected.txt` file instead.
+    suffix = ".expected.txt" if "--passes=AllocateSignatures" in flags \
+        else ".expected.ll"
+    return compare(path.with_suffix(suffix), out.read_text(), args.update)
 
 
 def run_lifter_case(args, path, tmp):

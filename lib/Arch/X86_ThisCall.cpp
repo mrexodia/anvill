@@ -70,6 +70,27 @@ static const std::vector<RegisterConstraint> kAVXReturnRegConstraints =
 static const std::vector<RegisterConstraint> kAVX512ReturnRegConstraints =
     ApplyX86Ext(kReturnRegConstraints, remill::kArchAMD64_AVX512);
 
+// Returns the name of the part of `reg32` (`ECX` or `EDX`) that holds a value
+// of `type`, or an empty string if `type` cannot be passed in a 32-bit
+// general purpose register (only integers of at most 32 bits and pointers
+// can).
+static std::string X86RegisterPartFor(llvm::Type *type, const char *reg32) {
+  const std::string name = reg32;
+  const auto letter = name.substr(1, 1);  // "C" or "D".
+  if (type->isPointerTy()) {
+    return name;
+  } else if (auto it = llvm::dyn_cast<llvm::IntegerType>(type)) {
+    if (it->getBitWidth() <= 8) {
+      return letter + "L";
+    } else if (it->getBitWidth() <= 16) {
+      return letter + "X";
+    } else if (it->getBitWidth() <= 32) {
+      return name;
+    }
+  }
+  return {};
+}
+
 }  // namespace
 
 // This is the cdecl calling convention referenced by llvm::CallingConv::C
@@ -298,16 +319,18 @@ llvm::ErrorOr<unsigned> X86_ThisCall::BindParameters(
 
   const auto esp_reg = arch->RegisterByName("ESP");
 
-  // If there is an injected sret (an implicit sret) then we need to allocate
-  // the first parameter to the sret struct. The type of said sret parameter
-  // will be the return type of the function.
+  // If the return value is returned in memory, then the caller passes a
+  // hidden pointer to its storage as the first stack argument. (Previously
+  // this parameter was typed as the returned aggregate itself, which also
+  // shifted every following argument by the aggregate's size.)
   if (injected_sret) {
     auto &decl = parameter_declarations.emplace_back();
 
-    decl.type = function.getReturnType();
+    decl.name = "__struct_ret_ptr";
+    decl.type = llvm::PointerType::get(function.getContext(), 0);
     decl.mem_offset = static_cast<int64_t>(stack_offset);
     decl.mem_reg = esp_reg;
-    stack_offset += dl.getTypeAllocSize(decl.type);
+    stack_offset += 4u;
   }
 
   for (auto &argument : function.args()) {
@@ -315,10 +338,23 @@ llvm::ErrorOr<unsigned> X86_ThisCall::BindParameters(
 
     declaration.type = argument.getType();
 
-    // Since there are no registers, just allocate from the stack
+    // The first argument (`this`) is passed in ECX. (Previously it was
+    // placed on the stack.)
+    if (!argument.getArgNo()) {
+      if (auto part = X86RegisterPartFor(declaration.type, "ECX");
+          !part.empty()) {
+        declaration.reg = arch->RegisterByName(part);
+        declaration.name = param_names[argument.getArgNo()];
+        continue;
+      }
+    }
+
+    // Every stack argument occupies a whole number of 4-byte slots.
+    // (Previously the exact allocation size was used, so an `i8` followed
+    // by an `i16` were at +8 and +9.)
     declaration.mem_offset = static_cast<int64_t>(stack_offset);
     declaration.mem_reg = esp_reg;
-    stack_offset += dl.getTypeAllocSize(argument.getType());
+    stack_offset += llvm::alignTo(dl.getTypeAllocSize(argument.getType()), 4u);
 
     // Get a name for the IR parameter.
     // Need to add 1 because param_names uses logical numbering, but
