@@ -34,8 +34,8 @@ static bool FoldAshrSlh(llvm::Function &func) {
     if (!pats::match(
             &insn,
             pats::m_AShr(pats::m_Shl(pats::m_Value(sem.int_ptr),
-                                     pats::m_ConstantInt(sem.shift_right)),
-                         pats::m_ConstantInt(sem.shift_left)))) {
+                                     pats::m_ConstantInt(sem.shift_left)),
+                         pats::m_ConstantInt(sem.shift_right)))) {
       continue;
     }
 
