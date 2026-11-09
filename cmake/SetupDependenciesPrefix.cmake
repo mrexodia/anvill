@@ -17,6 +17,8 @@ if(NOT CMAKE_PREFIX_PATH AND NOT "$ENV{CMAKE_PREFIX_PATH}" STREQUAL ""
     unset(_layered_prefix_path)
 endif()
 
+# sleigh is not required: with -DENABLE_SLEIGH=OFF the superbuild does not
+# install it, and remill then fetches sleigh itself (see CMakeLists.txt).
 if(NOT CMAKE_PREFIX_PATH AND "$ENV{CMAKE_PREFIX_PATH}" STREQUAL "")
     set(_missing_default_dependencies "")
     foreach(_required_path IN ITEMS
@@ -28,7 +30,6 @@ if(NOT CMAKE_PREFIX_PATH AND "$ENV{CMAKE_PREFIX_PATH}" STREQUAL "")
         "${DEFAULT_DEPENDENCIES_PREFIX}/lib/cmake/z3/Z3Config.cmake"
         "${DEFAULT_DEPENDENCIES_PREFIX}/lib/cmake/doctest/doctestConfig.cmake"
         "${DEFAULT_DEPENDENCIES_PREFIX}/lib/cmake/protobuf/protobuf-config.cmake"
-        "${DEFAULT_DEPENDENCIES_PREFIX}/lib/cmake/sleigh/sleighConfig.cmake"
     )
         if(NOT EXISTS "${_required_path}")
             list(APPEND _missing_default_dependencies "${_required_path}")

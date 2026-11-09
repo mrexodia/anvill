@@ -207,7 +207,7 @@ static llvm::StructType *GenerateStackFrameType(
   stack_frame_size = num_slots * slot_size;
 
   if (stack_frame_type != nullptr) {
-    assert(dl.getTypeAllocSize(stack_frame_type).getKnownMinSize() <=
+    assert(dl.getTypeAllocSize(stack_frame_type).getKnownMinValue() <=
            stack_frame_size);
     return stack_frame_type;
   }
@@ -377,7 +377,14 @@ static void UpdateFunction(
   //
   //     [lower addresses]
 
-  auto total_stack_frame_size = padding_bytes + stack_frame_analysis.size;
+  // The generated frame type may be smaller than the recovered frame plus
+  // padding when it was clamped to `max_stack_frame_size`; never initialize
+  // past the end of the alloca.
+  const auto allocated_frame_size =
+      function.getParent()->getDataLayout().getTypeAllocSize(stack_frame_type)
+          .getFixedValue();
+  auto total_stack_frame_size = std::min<uint64_t>(
+      padding_bytes + stack_frame_analysis.size, allocated_frame_size);
 
   // Pre-initialize the stack frame if we have been requested to do so. This
   // covers the frame padding bytes as well.
