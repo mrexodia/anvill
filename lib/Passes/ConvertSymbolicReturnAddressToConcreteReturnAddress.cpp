@@ -118,6 +118,7 @@ ConvertSymbolicReturnAddressToConcreteReturnAddress::run(
             llvm::Instruction::BitCast, ra, ce_type);
         bc->insertAfter(ra);
         CopyMetadataTo(inst, bc);
+        use->set(bc);
 
       } else if (ce_type->isIntegerTy()) {
         auto pti = llvm::PtrToIntInst::Create(
