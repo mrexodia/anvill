@@ -107,12 +107,12 @@ define void @untyped_call() local_unnamed_addr #0 !pc !0 {
   %return_address = call ptr @llvm.returnaddress(i32 0), !pc !0
   %1 = ptrtoint ptr %return_address to i64, !pc !0
   %2 = call ptr @llvm.addressofreturnaddress.p0(), !pc !1
-  %parameters = alloca i64, align 8, !pc !0, !stack_offset !2
-  %3 = ptrtoint ptr %parameters to i64, !pc !0, !stack_offset !2
+  %locals = alloca i64, align 8, !pc !0, !stack_offset !2
+  %3 = ptrtoint ptr %locals to i64, !pc !0, !stack_offset !2
   %return_address_loc = alloca i64, align 8, !pc !0, !stack_offset !3
   %4 = ptrtoint ptr %return_address_loc to i64, !pc !0, !stack_offset !3
   %5 = load i64, ptr @__anvill_stack_minus_8, align 8, !pc !0
-  store i64 %5, ptr %parameters, align 8, !pc !0
+  store i64 %5, ptr %locals, align 8, !pc !0
   %6 = load i64, ptr @__anvill_stack_0, align 8, !pc !0
   store i64 %6, ptr %return_address_loc, align 8, !pc !0
   %7 = alloca %struct.State, align 8, !pc !0
@@ -2299,7 +2299,7 @@ define void @untyped_call() local_unnamed_addr #0 !pc !0 {
   store i64 %4, ptr %192, align 8, !pc !0
   store i64 %1, ptr %return_address_loc, align 8, !pc !0
   store i64 ptrtoint (ptr @untyped_call to i64), ptr %212, align 8, !pc !0
-  store i64 4198405, ptr %parameters, align 8, !pc !0
+  store i64 4198405, ptr %locals, align 8, !pc !0
   store i64 %3, ptr %192, align 8, !tbaa !4, !pc !0
   store i64 4202496, ptr %212, align 8, !tbaa !4, !pc !0
   %1216 = call ptr @__remill_function_call(ptr %7, i64 4202496, ptr null), !pc !0
@@ -2332,8 +2332,8 @@ attributes #2 = { nocallback nofree nosync nounwind willreturn memory(none) }
 
 !0 = !{i64 4198400}
 !1 = !{i64 4198405}
-!2 = !{i64 0}
-!3 = !{i64 -8}
+!2 = !{i64 8}
+!3 = !{i64 0}
 !4 = !{!5, !5, i64 0}
 !5 = !{!"long", !6, i64 0}
 !6 = !{!"omnipotent char", !7, i64 0}

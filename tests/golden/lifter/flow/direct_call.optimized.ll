@@ -16,15 +16,15 @@ target triple = "x86_64-pc-linux-gnu-elf"
 
 ; Function Attrs: noinline
 define i32 @f(i32 %0) local_unnamed_addr #0 !pc !0 {
-  %parameters1 = alloca [4 x i64], align 8, !pc !1
-  %2 = getelementptr inbounds i8, ptr %parameters1, i64 8, !pc !0
-  %3 = getelementptr inbounds i8, ptr %parameters1, i64 16, !pc !0
-  %4 = getelementptr inbounds i8, ptr %parameters1, i64 24, !pc !0
-  %5 = getelementptr inbounds i8, ptr %parameters1, i64 20, !pc !2
-  %locals2 = alloca [2 x i64], align 8, !pc !3
-  %6 = getelementptr inbounds i8, ptr %locals2, i64 8, !pc !3
+  %locals1 = alloca [4 x i64], align 8, !pc !1
+  %2 = getelementptr inbounds i8, ptr %locals1, i64 8, !pc !0
+  %3 = getelementptr inbounds i8, ptr %locals1, i64 16, !pc !0
+  %4 = getelementptr inbounds i8, ptr %locals1, i64 24, !pc !0
+  %5 = getelementptr inbounds i8, ptr %locals1, i64 20, !pc !2
+  %parameters2 = alloca [2 x i64], align 8, !pc !3
+  %6 = getelementptr inbounds i8, ptr %parameters2, i64 8, !pc !3
   %7 = load i64, ptr @__anvill_stack_minus_32, align 8, !pc !0
-  store i64 %7, ptr %parameters1, align 8, !pc !0
+  store i64 %7, ptr %locals1, align 8, !pc !0
   %8 = load i64, ptr @__anvill_stack_minus_24, align 8, !pc !0
   store i64 %8, ptr %2, align 8, !pc !0
   %9 = load i64, ptr @__anvill_stack_minus_16, align 8, !pc !0
@@ -32,7 +32,7 @@ define i32 @f(i32 %0) local_unnamed_addr #0 !pc !0 {
   %10 = load i64, ptr @__anvill_stack_minus_8, align 8, !pc !0
   store i64 %10, ptr %4, align 8, !pc !0
   %11 = load i64, ptr @__anvill_stack_plus_8, align 8, !pc !0
-  store i64 %11, ptr %locals2, align 8, !pc !0
+  store i64 %11, ptr %parameters2, align 8, !pc !0
   %12 = load i64, ptr @__anvill_stack_plus_16, align 8, !pc !0
   store i64 %12, ptr %6, align 8, !pc !0
   %13 = load i64, ptr @__anvill_reg_RBP, align 8, !pc !0
@@ -40,7 +40,7 @@ define i32 @f(i32 %0) local_unnamed_addr #0 !pc !0 {
   store i32 %0, ptr %5, align 4, !pc !2
   %14 = sext i32 %0 to i64, !pc !4
   %15 = mul nsw i64 %14, 3, !pc !4
-  store i64 4198419, ptr %parameters1, align 8, !pc !1
+  store i64 4198419, ptr %locals1, align 8, !pc !1
   %16 = trunc i64 %15 to i32, !pc !1
   %17 = call i32 @g(i32 %16) #2, !pc !1
   %18 = load i32, ptr %5, align 4, !pc !5

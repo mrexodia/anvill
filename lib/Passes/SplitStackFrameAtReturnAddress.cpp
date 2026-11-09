@@ -83,7 +83,7 @@ static std::vector<FixedOffsetUse> FindFixedOffsetUses(
     work_list.pop_back();
 
     for (llvm::Use &use : inst->uses()) {
-      if (seen.count(&use)) {
+      if (!seen.insert(&use).second) {
         continue;
       }
 
@@ -468,10 +468,20 @@ static void SubstituteUse(
           auto sub_ret_pty = llvm::PointerType::get(
               ir.getContext(), addr_space);
 
-          auto bc = ir.CreateBitOrPointerCast(ret, sub_ret_pty);
+          // The new GEP starts from the pointer to the constant part of the
+          // offset (`sub_ret`), and is placed where the old GEP was, because
+          // its variable indices may not be available in the entry block.
+          llvm::IRBuilder<> gep_ir(user_inst);
+          auto bc = gep_ir.CreateBitOrPointerCast(sub_ret, sub_ret_pty);
           CopyMetadataTo(user_inst, bc);
 
-          auto new_gep = ir.CreateGEP(sub_ret_ty, bc, var_indices);
+          // `sub_ret_ty` is the type that the remaining (variable) indices
+          // index into, so the new GEP needs a leading zero index.
+          llvm::SmallVector<llvm::Value *, 4u> new_indices;
+          new_indices.push_back(llvm::ConstantInt::get(
+              llvm::Type::getIntNTy(ir.getContext(), addr_size * 8u), 0));
+          new_indices.append(var_indices.begin(), var_indices.end());
+          auto new_gep = gep_ir.CreateGEP(sub_ret_ty, bc, new_indices);
           CopyMetadataTo(user_inst, new_gep);
 
           to_replace.emplace(user_inst, new_gep);
@@ -525,6 +535,10 @@ static void SplitStackFrameAround(
     }
   }
 
+  // NOTE: Frame offsets grow with the address: `above` holds the uses at
+  //       lower addresses than the return address (the callee's locals when
+  //       the stack grows down), `below` the uses at higher addresses (the
+  //       caller's stack arguments when the stack grows down).
   std::vector<std::pair<llvm::Use *, uint64_t>> above;
   std::vector<std::pair<llvm::Use *, uint64_t>> at;
   std::vector<std::pair<llvm::Use *, uint64_t>> below;
@@ -579,14 +593,14 @@ static void SplitStackFrameAround(
 
   if (!above.empty()) {
     auto num_slots = (offset_of_ra + (addr_size - 1u)) / addr_size;
-    make_subframe(std::move(above), "parameters", "locals", num_slots);
+    make_subframe(std::move(above), "locals", "parameters", num_slots);
   }
 
   if (!below.empty()) {
     auto frame_size = dl.getTypeAllocSize(
         frame_alloca->getAllocatedType()).getKnownMinValue();
     auto num_slots = ((frame_size - end_of_ra) + (addr_size - 1u)) / addr_size;
-    make_subframe(std::move(below), "locals", "parameters", num_slots);
+    make_subframe(std::move(below), "parameters", "locals", num_slots);
   }
 
   if (!at.empty()) {

@@ -257,7 +257,33 @@ static llvm::GlobalVariable *GetStackSymbolicByteValue(
 // they operate on the new stack frame type we generated.
 static void UpdateFunction(
     llvm::Function &function, const StackFrameRecoveryOptions &options,
-    const StackFrameAnalysis &stack_frame_analysis) {
+    const StackFrameAnalysis &unaligned_stack_frame_analysis) {
+
+  // Align the frame to the word size *relative to the stack pointer on
+  // entry*: the frame then starts and ends on word boundaries of the real
+  // stack, so that pointer-sized values such as the return address occupy
+  // exactly one frame word. (Previously the frame started at the lowest
+  // accessed offset, e.g. -12 on a 64-bit target, so frame words straddled
+  // the return address slot and SplitStackFrameAtReturnAddress produced
+  // out-of-bounds accesses.)
+  StackFrameAnalysis stack_frame_analysis = unaligned_stack_frame_analysis;
+  {
+    const auto &dl = function.getParent()->getDataLayout();
+    const int64_t word = options.stack_frame_word_size
+                             ? options.stack_frame_word_size
+                             : static_cast<int64_t>(dl.getPointerSize(0));
+    auto align_down = [word](int64_t v) {
+      return v >= 0 ? (v / word) * word : -(((-v) + word - 1) / word) * word;
+    };
+    auto align_up = [&](int64_t v) { return -align_down(-v); };
+    stack_frame_analysis.lowest_offset =
+        align_down(stack_frame_analysis.lowest_offset);
+    stack_frame_analysis.highest_offset =
+        align_up(stack_frame_analysis.highest_offset);
+    stack_frame_analysis.size = static_cast<std::size_t>(
+        stack_frame_analysis.highest_offset -
+        stack_frame_analysis.lowest_offset);
+  }
 
   StackFrameStructureInitializationProcedure init_strategy =
       options.stack_frame_struct_init_procedure;
@@ -311,25 +337,14 @@ static void UpdateFunction(
     // TODO(pag): Account for the stack size having actually been clamped down
     //            to a smaller range.
 
-    int64_t base = 0;
-
-    // If the stack grows down, the higher offsets represent accesses to
-    // the callee's stack frame. These will be positive.
-    if (options.stack_grows_down) {
-      base = stack_frame_analysis.highest_offset;
-      base += static_cast<int64_t>(options.stack_frame_higher_padding);
-      base -= static_cast<int64_t>(stack_frame_word_size);
-
-    // If the stack grows up, the lower offsets represent accesses to the
-    // callee's stack frame. These will be negative.
-    } else {
-      base = stack_frame_analysis.lowest_offset;
-      base -= static_cast<int64_t>(options.stack_frame_lower_padding);
-      base += static_cast<int64_t>(stack_frame_word_size);
-    }
-
-    // NOTE(pag): Base points to the highest or lowest address-sized integer
-    //            that can be stored on the stack.
+    // The stack-zero metadata is the offset, from the start of the frame
+    // alloca, of the stack pointer on entry to the function (i.e. where
+    // `__anvill_stack_0` lands). SplitStackFrameAtReturnAddress uses it to
+    // turn frame offsets into stack offsets. (It used to be computed from the
+    // highest accessed stack offset, which mixed stack-relative and
+    // frame-relative offsets and made every `stack_offset` off by a few
+    // bytes.)
+    const int64_t base = -base_stack_offset;
 
     auto md_id = context.getMDKindID(kAnvillStackZero);
     auto adjust_val = llvm::ConstantInt::get(
@@ -370,19 +385,26 @@ static void UpdateFunction(
   // Look at the definition for the `StackFrameStructureInitializationProcedure`
   // enum class to get more details on each initialization strategy.
   switch (init_strategy) {
-    case StackFrameStructureInitializationProcedure::kZeroes: {
-
-      // Initialize to zero
-      auto null_value = llvm::Constant::getNullValue(stack_frame_type);
-      builder.CreateStore(null_value, stack_frame_alloca);
-      break;
-    }
-
+    // Zeroes and undef are stored one word at a time (like the symbolic
+    // values) rather than with one store of the whole frame:
+    // SplitStackFrameAtReturnAddress splits the frame into pieces, and a
+    // single whole-frame store would be redirected into the first piece,
+    // writing past its end.
+    case StackFrameStructureInitializationProcedure::kZeroes:
     case StackFrameStructureInitializationProcedure::kUndef: {
-
-      // Mark the stack values as explicitly undefined
-      auto undef_value = llvm::UndefValue::get(stack_frame_type);
-      builder.CreateStore(undef_value, stack_frame_alloca);
+      llvm::Constant *word_value =
+          init_strategy == StackFrameStructureInitializationProcedure::kZeroes
+              ? llvm::Constant::getNullValue(stack_frame_word_type)
+              : llvm::UndefValue::get(stack_frame_word_type);
+      llvm::Value *gep_indexes[] = {builder.getInt32(0), builder.getInt32(0),
+                                    nullptr};
+      for (auto i = 0U; i < total_stack_frame_size;
+           i += stack_frame_word_size) {
+        gep_indexes[2] = builder.getInt32(i / stack_frame_word_size);
+        auto stack_frame_word = builder.CreateGEP(
+            stack_frame_type, stack_frame_alloca, gep_indexes);
+        builder.CreateStore(word_value, stack_frame_word);
+      }
       break;
     }
 

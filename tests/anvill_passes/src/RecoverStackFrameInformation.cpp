@@ -301,7 +301,11 @@ TEST_SUITE("RecoverBasicStackFrame") {
             ++frame_gep_count;
           }
 
-          CHECK(frame_gep_count == 14U);
+          // kZeroes initializes the frame one word at a time (a whole-frame
+          // store cannot be split by SplitStackFrameAtReturnAddress), which
+          // adds one GEP per frame word: the 44-byte frame (offsets -28 to
+          // 16, already word aligned) has 11 four-byte words.
+          CHECK(frame_gep_count == 14U + 11U);
 
           // If we run a second stack analysis, we should no longer find any
           // stack frame operation to recover
