@@ -1999,21 +1999,134 @@ Algorithm, `analyzeComparison(call)`:
 `data/maybe_proof.smt` and `data/proof_result.smt` are dumps of such queries; no test uses them.
 A large comment block in the .cpp shows an SMT-LIB example proving `sle` via add.
 
-Example, from `tests/anvill_passes/data/BranchRecoveryAarch64.ll`, function `@slice(ptr %0, i32 %W10, i32 %W9, ptr %PC_output)`:
+The golden case below is the function `@slice` from `tests/anvill_passes/data/BranchRecoveryAarch64.ll`. The pass
+manager runs InstCombine first, as the unit test does, so the flag computations are in canonical form:
+
+Real IR: `tests/golden/passes/BranchRecovery/aarch64.ll`, run as `anvill-opt --passes=instcombine<no-verify-fixpoint>,BranchRecovery`. Input:
 
 ```llvm
-%2  = xor i32 %W10, -1
-...                                   ; %5 = W9 + ~W10 + 1  (= W9 - W10 in i64)
-%10 = trunc i64 %5 to i32
-%11 = icmp slt i32 %10, 0
-%12 = tail call i1 (i1, ...) @__remill_flag_computation_sign(i1 %11, i32 %W9, i32 %W10, i32 %10)
-...
-%16 = tail call i1 (i1, ...) @__remill_flag_computation_overflow(i1 %15, i32 %W9, i32 %W10, i32 %10)
-%17 = xor i1 %12, %16
-%18 = xor i1 %17, true
-%19 = tail call zeroext i1 @__remill_compare_sge(i1 zeroext %18)
-br i1 %19, label %20, label %22
+; AArch64 flag computations (NZCV) behind a compare hint.
+source_filename = "lifted_code"
+
+; Function Attrs: noduplicate noinline nounwind optnone readnone willreturn
+declare zeroext i1 @__remill_flag_computation_sign(i1 zeroext, ...) local_unnamed_addr #0
+
+; Function Attrs: noduplicate noinline nounwind optnone readnone willreturn
+declare zeroext i1 @__remill_flag_computation_overflow(i1 zeroext, ...) local_unnamed_addr #0
+
+; Function Attrs: nounwind readnone willreturn
+declare zeroext i1 @__remill_compare_sge(i1 zeroext) local_unnamed_addr #1
+
+; Function Attrs: noduplicate noinline nounwind optnone
+declare ptr @__remill_function_return(ptr nonnull align 1, i64, ptr) local_unnamed_addr #2
+
+; Function Attrs: noduplicate noinline nounwind optnone
+declare ptr @__remill_missing_block(ptr nonnull align 1, i64, ptr) local_unnamed_addr #2
+
+; Function Attrs: nounwind ssp
+define ptr @slice(ptr %0, i32 %W10, i32 %W9, ptr nocapture %PC_output) local_unnamed_addr #3 {
+  %.sroa.0.688.insert.ext = zext i32 %W9 to i64
+  %2 = xor i32 %W10, -1
+  %3 = zext i32 %2 to i64
+  %4 = add nuw nsw i64 %3, 1
+  %5 = add nuw nsw i64 %4, %.sroa.0.688.insert.ext
+  %6 = sext i32 %W9 to i64
+  %7 = sext i32 %2 to i64
+  %8 = add nsw i64 %7, 1
+  %9 = add nsw i64 %8, %6
+  %10 = trunc i64 %5 to i32
+  %11 = icmp slt i32 %10, 0
+  %12 = tail call zeroext i1 (i1, ...) @__remill_flag_computation_sign(i1 zeroext %11, i32 %W9, i32 %W10, i32 %10) #4
+  %13 = shl i64 %5, 32
+  %14 = ashr exact i64 %13, 32
+  %15 = icmp ne i64 %14, %9
+  %16 = tail call zeroext i1 (i1, ...) @__remill_flag_computation_overflow(i1 zeroext %15, i32 %W9, i32 %W10, i32 %10) #4
+  %17 = xor i1 %12, %16
+  %18 = xor i1 %17, true
+  %19 = tail call zeroext i1 @__remill_compare_sge(i1 zeroext %18) #4
+  br i1 %19, label %20, label %22
+
+20:                                               ; preds = %1
+  %21 = tail call ptr @__remill_function_return(ptr undef, i64 undef, ptr %0) #5, !noalias !0
+  br label %sub_0.exit
+
+22:                                               ; preds = %1
+  %23 = tail call ptr @__remill_missing_block(ptr undef, i64 16, ptr %0) #5, !noalias !0
+  br label %sub_0.exit
+
+sub_0.exit:                                       ; preds = %22, %20
+  %24 = phi ptr [ %21, %20 ], [ %23, %22 ]
+  store i64 16, ptr %PC_output, align 8
+  ret ptr %24
+}
+
+attributes #0 = { noduplicate noinline nounwind optnone readnone willreturn "disable-tail-calls"="false" "frame-pointer"="all" "less-precise-fpmad"="false" "no-builtins" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #1 = { nounwind readnone willreturn "disable-tail-calls"="false" "frame-pointer"="all" "less-precise-fpmad"="false" "no-builtins" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #2 = { noduplicate noinline nounwind optnone "disable-tail-calls"="false" "frame-pointer"="all" "less-precise-fpmad"="false" "no-builtins" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #3 = { nounwind ssp }
+attributes #4 = { nobuiltin nounwind readnone willreturn "no-builtins" }
+attributes #5 = { nounwind }
+
+!0 = !{!1}
+!1 = distinct !{!1, !2, !"sub_0: %state"}
+!2 = distinct !{!2, !"sub_0"}
 ```
+
+Output (`aarch64.expected.ll`):
+
+```llvm
+declare zeroext i1 @__remill_flag_computation_sign(i1 zeroext, ...) local_unnamed_addr #0
+
+declare zeroext i1 @__remill_flag_computation_overflow(i1 zeroext, ...) local_unnamed_addr #0
+
+declare zeroext i1 @__remill_compare_sge(i1 zeroext) local_unnamed_addr #1
+
+declare ptr @__remill_function_return(ptr nonnull align 1, i64, ptr) local_unnamed_addr #2
+
+declare ptr @__remill_missing_block(ptr nonnull align 1, i64, ptr) local_unnamed_addr #2
+
+define ptr @slice(ptr %0, i32 %W10, i32 %W9, ptr nocapture %PC_output) local_unnamed_addr #3 {
+  %.sroa.0.688.insert.ext = zext i32 %W9 to i64
+  %2 = xor i32 %W10, -1
+  %3 = zext i32 %2 to i64
+  %4 = add nuw nsw i64 %3, 1
+  %5 = add nuw nsw i64 %4, %.sroa.0.688.insert.ext
+  %6 = sext i32 %W9 to i64
+  %7 = sext i32 %2 to i64
+  %8 = add nsw i64 %7, 1
+  %9 = add nsw i64 %8, %6
+  %10 = trunc i64 %5 to i32
+  %11 = icmp slt i32 %10, 0
+  %12 = tail call zeroext i1 (i1, ...) @__remill_flag_computation_sign(i1 zeroext %11, i32 %W9, i32 %W10, i32 %10) #4
+  %13 = shl i64 %5, 32
+  %14 = ashr exact i64 %13, 32
+  %15 = icmp ne i64 %14, %9
+  %16 = tail call zeroext i1 (i1, ...) @__remill_flag_computation_overflow(i1 zeroext %15, i32 %W9, i32 %W10, i32 %10) #4
+  %17 = xor i1 %12, %16
+  %18 = xor i1 %17, true
+  %19 = icmp sge i32 %W9, %W10
+  br i1 %19, label %20, label %22
+
+20:                                               ; preds = %1
+  %21 = tail call ptr @__remill_function_return(ptr undef, i64 undef, ptr %0) #5, !noalias !0
+  br label %sub_0.exit
+
+22:                                               ; preds = %1
+  %23 = tail call ptr @__remill_missing_block(ptr undef, i64 16, ptr %0) #5, !noalias !0
+  br label %sub_0.exit
+
+sub_0.exit:                                       ; preds = %22, %20
+  %24 = phi ptr [ %21, %20 ], [ %23, %22 ]
+  store i64 16, ptr %PC_output, align 8
+  ret ptr %24
+}
+
+!0 = !{!1}
+!1 = distinct !{!1, !2, !"sub_0: %state"}
+!2 = distinct !{!2, !"sub_0"}
+```
+
+More cases in `tests/golden/passes/BranchRecovery/`: `unrecoverable.ll`, `x86_sub_sle.ll`.
 
 The test runs InstCombine first. Expected analysis result: `compare == ICMP_SGE`,
 `compared == (%W9 /*arg 2*/, %W10 /*arg 1*/)`.
@@ -2033,16 +2146,142 @@ Added by `AddBranchRecovery(fpm)`.
 * if `call` is in the map, call `llvm::ReplaceInstWithInst(call, new ICmpInst(ba.compare, ba.compared.first, ba.compared.second))`
   and intersect `agg` with `none()`.
 
-Before and after, from the BranchRecoveryAarch64 test:
+The x86 counterpart (`data/RecoverSubBranch.ll`, a `sub RDX, RAX` with ZF | (SF ^ OF) feeding `__remill_compare_sle`):
+
+Real IR: `tests/golden/passes/BranchRecovery/x86_sub_sle.ll`, run as `anvill-opt --passes=instcombine<no-verify-fixpoint>,BranchRecovery`. Input:
 
 ```llvm
-; before
-%19 = tail call zeroext i1 @__remill_compare_sge(i1 zeroext %18)
-br i1 %19, label %20, label %22
-; after
-%19 = icmp sge i32 %W9, %W10
-br i1 %19, label %20, label %22
+; A signed less-or-equal (x86 jle after sub): the __remill_compare_sle hint 
+; over the ZF/SF/OF flag computations is proven (with Z3) equal to icmp sle 
+; RDX, RAX and replaced by it.
+source_filename = "lifted_code"
+
+; Function Attrs: noduplicate noinline nounwind optnone readnone willreturn
+declare zeroext i1 @__remill_flag_computation_zero(i1 zeroext, ...) local_unnamed_addr #0
+
+; Function Attrs: noduplicate noinline nounwind optnone readnone willreturn
+declare zeroext i1 @__remill_flag_computation_sign(i1 zeroext, ...) local_unnamed_addr #0
+
+; Function Attrs: noduplicate noinline nounwind optnone readnone willreturn
+declare zeroext i1 @__remill_flag_computation_overflow(i1 zeroext, ...) local_unnamed_addr #0
+
+; Function Attrs: noduplicate noinline nounwind optnone readnone willreturn
+declare zeroext i1 @__remill_compare_sle(i1 zeroext) local_unnamed_addr #0
+
+; Function Attrs: noduplicate noinline nounwind optnone readnone willreturn
+declare i64 @__remill_read_memory_64(ptr, i64) local_unnamed_addr #0
+
+; Function Attrs: noduplicate noinline nounwind optnone
+declare ptr @__remill_function_return(ptr nonnull align 1, i64, ptr) local_unnamed_addr #1
+
+; Function Attrs: noduplicate noinline nounwind optnone
+declare ptr @__remill_missing_block(ptr nonnull align 1, i64, ptr) local_unnamed_addr #1
+
+; Function Attrs: nounwind ssp
+define ptr @slice(ptr %0, i64 %RAX, i64 %RDX, ptr nocapture %RIP_output) local_unnamed_addr #2 {
+  %2 = sub i64 %RDX, %RAX
+  %3 = icmp eq i64 %2, 0
+  %4 = tail call zeroext i1 (i1, ...) @__remill_flag_computation_zero(i1 zeroext %3, i64 %RDX, i64 %RAX, i64 %2) #3
+  %5 = icmp slt i64 %2, 0
+  %6 = tail call zeroext i1 (i1, ...) @__remill_flag_computation_sign(i1 zeroext %5, i64 %RDX, i64 %RAX, i64 %2) #3
+  %7 = lshr i64 %RDX, 63
+  %8 = lshr i64 %RAX, 63
+  %9 = lshr i64 %2, 63
+  %10 = xor i64 %7, %8
+  %11 = xor i64 %9, %7
+  %12 = add nuw nsw i64 %11, %10
+  %13 = icmp eq i64 %12, 2
+  %14 = tail call zeroext i1 (i1, ...) @__remill_flag_computation_overflow(i1 zeroext %13, i64 %RDX, i64 %RAX, i64 %2) #3
+  %15 = xor i1 %6, %14
+  %16 = or i1 %4, %15
+  %17 = tail call zeroext i1 @__remill_compare_sle(i1 zeroext %16) #4
+  br i1 %17, label %18, label %21
+
+18:                                               ; preds = %1
+  %19 = tail call i64 @__remill_read_memory_64(ptr %0, i64 undef) #3
+  %20 = tail call ptr @__remill_function_return(ptr undef, i64 %19, ptr %0) #5, !noalias !0
+  br label %sub_0.exit
+
+21:                                               ; preds = %1
+  %22 = tail call ptr @__remill_missing_block(ptr undef, i64 8, ptr %0) #5, !noalias !0
+  br label %sub_0.exit
+
+sub_0.exit:                                       ; preds = %21, %18
+  %.sroa.13.0 = phi i64 [ %19, %18 ], [ 8, %21 ]
+  %23 = phi ptr [ %20, %18 ], [ %22, %21 ]
+  store i64 %.sroa.13.0, ptr %RIP_output, align 8
+  ret ptr %23
+}
+
+attributes #0 = { noduplicate noinline nounwind optnone readnone willreturn "disable-tail-calls"="false" "frame-pointer"="all" "less-precise-fpmad"="false" "no-builtins" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #1 = { noduplicate noinline nounwind optnone "disable-tail-calls"="false" "frame-pointer"="all" "less-precise-fpmad"="false" "no-builtins" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #2 = { nounwind ssp }
+attributes #3 = { nobuiltin nounwind readnone willreturn "no-builtins" }
+attributes #4 = { alwaysinline nobuiltin nounwind readnone willreturn "no-builtins" }
+attributes #5 = { nounwind }
+
+!0 = !{!1}
+!1 = distinct !{!1, !2, !"sub_0: %state"}
+!2 = distinct !{!2, !"sub_0"}
 ```
+
+Output (`x86_sub_sle.expected.ll`):
+
+```llvm
+declare zeroext i1 @__remill_flag_computation_zero(i1 zeroext, ...) local_unnamed_addr #0
+
+declare zeroext i1 @__remill_flag_computation_sign(i1 zeroext, ...) local_unnamed_addr #0
+
+declare zeroext i1 @__remill_flag_computation_overflow(i1 zeroext, ...) local_unnamed_addr #0
+
+declare zeroext i1 @__remill_compare_sle(i1 zeroext) local_unnamed_addr #0
+
+declare i64 @__remill_read_memory_64(ptr, i64) local_unnamed_addr #0
+
+declare ptr @__remill_function_return(ptr nonnull align 1, i64, ptr) local_unnamed_addr #1
+
+declare ptr @__remill_missing_block(ptr nonnull align 1, i64, ptr) local_unnamed_addr #1
+
+define ptr @slice(ptr %0, i64 %RAX, i64 %RDX, ptr nocapture %RIP_output) local_unnamed_addr #2 {
+  %2 = sub i64 %RDX, %RAX
+  %3 = icmp eq i64 %RDX, %RAX
+  %4 = tail call zeroext i1 (i1, ...) @__remill_flag_computation_zero(i1 zeroext %3, i64 %RDX, i64 %RAX, i64 %2) #3
+  %5 = icmp slt i64 %2, 0
+  %6 = tail call zeroext i1 (i1, ...) @__remill_flag_computation_sign(i1 zeroext %5, i64 %RDX, i64 %RAX, i64 %2) #3
+  %7 = xor i64 %RDX, %RAX
+  %8 = lshr i64 %7, 63
+  %9 = xor i64 %2, %RDX
+  %10 = lshr i64 %9, 63
+  %11 = add nuw nsw i64 %10, %8
+  %12 = icmp eq i64 %11, 2
+  %13 = tail call zeroext i1 (i1, ...) @__remill_flag_computation_overflow(i1 zeroext %12, i64 %RDX, i64 %RAX, i64 %2) #3
+  %14 = xor i1 %6, %13
+  %15 = or i1 %4, %14
+  %16 = icmp sle i64 %RDX, %RAX
+  br i1 %16, label %17, label %20
+
+17:                                               ; preds = %1
+  %18 = tail call i64 @__remill_read_memory_64(ptr %0, i64 undef) #3
+  %19 = tail call ptr @__remill_function_return(ptr undef, i64 %18, ptr %0) #4, !noalias !0
+  br label %sub_0.exit
+
+20:                                               ; preds = %1
+  %21 = tail call ptr @__remill_missing_block(ptr undef, i64 8, ptr %0) #4, !noalias !0
+  br label %sub_0.exit
+
+sub_0.exit:                                       ; preds = %20, %17
+  %.sroa.13.0 = phi i64 [ %18, %17 ], [ 8, %20 ]
+  %22 = phi ptr [ %19, %17 ], [ %21, %20 ]
+  store i64 %.sroa.13.0, ptr %RIP_output, align 8
+  ret ptr %22
+}
+
+!0 = !{!1}
+!1 = distinct !{!1, !2, !"sub_0: %state"}
+!2 = distinct !{!2, !"sub_0"}
+```
+
+More cases in `tests/golden/passes/BranchRecovery/`: `aarch64.ll`, `unrecoverable.ll`.
 
 The flag computations become dead. DCE or InstCombine removes them, and `RemoveUnusedBranchHints` handles the rest.
 
@@ -2059,24 +2298,68 @@ Added by **`AddRemoveFailedBranchHints(fpm)`** (note the name mismatch).
 `runOnIntrinsic`: `call->replaceAllUsesWith(call->getArgOperand(0)); call->eraseFromParent();` and returns
 `none()`. The `agg` argument is ignored, so the result is `none()` whenever any target existed.
 
+Real IR: `tests/golden/passes/RemoveUnusedBranchHints/basic.ll`, run as `anvill-opt --passes=RemoveUnusedBranchHints`. Input:
+
 ```llvm
-; before
-%12 = call i1 (i1, ...) @__remill_flag_computation_sign(i1 %11, i32 %a, i32 %b, i32 %r)
-%19 = call i1 @__remill_compare_sle(i1 %16)
-; after: uses of %12 -> %11, uses of %19 -> %16
+; Branch hints that BranchRecovery did not use are removed: calls to
+; __remill_compare_* and __remill_flag_computation_* are replaced by their
+; first argument (the computed i1). __remill_compare_exchange_* calls are
+; atomic memory operations and must be kept (previously they were replaced by
+; their memory pointer, deleting the atomic store).
+
+declare i1 @__remill_compare_eq(i1)
+declare i1 @__remill_compare_sle(i1)
+declare i1 @__remill_flag_computation_zero(i1, ...)
+declare ptr @__remill_compare_exchange_memory_32(ptr, i64, ptr, i32)
+
+define i1 @f(ptr %mem, i32 %a, i32 %b, ptr %expected) {
+  %eq = icmp eq i32 %a, %b
+  %h1 = call i1 @__remill_compare_eq(i1 %eq)
+  %sle = icmp sle i32 %a, %b
+  %h2 = call i1 @__remill_compare_sle(i1 %sle)
+  %z = icmp eq i32 %a, 0
+  %f = call i1 (i1, ...) @__remill_flag_computation_zero(i1 %z, i32 %a, i32 0, i32 %a)
+  %m = call ptr @__remill_compare_exchange_memory_32(ptr %mem, i64 16, ptr %expected, i32 %b)
+  %x = and i1 %h1, %h2
+  %y = and i1 %x, %f
+  ret i1 %y
+}
 ```
 
-Gotcha: unlike BranchHintPass, this pass does **not** exclude `__remill_compare_exchange*`. If a
-Remill CAS intrinsic survives to this point, its arg0 (the memory pointer) replaces the call
-(which also returns `Memory*`). The CAS is silently erased.
+Output (`basic.expected.ll`):
 
-#### 13.2.6 `SimplifyStackArithFlags` (dead code, NOT BUILT)
+```llvm
+declare i1 @__remill_compare_eq(i1)
 
-The files are `lib/Passes/SimplifyStackArithFlags.{h,cpp}`. They are not in the `anvill_passes` list in
-`lib/CMakeLists.txt`, and they include non-existent headers (`anvill/Analysis/Utils.h`, `anvill/BranchAnalysis.h`).
-`AddSimplifyStackArithFlags(fpm, bool)` is declared in Transforms.h but never defined in the build.
+declare i1 @__remill_compare_sle(i1)
 
-Intended behaviour: an IntrinsicPass over calls where `ParseFlagIntrinsic` succeeds. If `flag.over` is a
+declare i1 @__remill_flag_computation_zero(i1, ...)
+
+declare ptr @__remill_compare_exchange_memory_32(ptr, i64, ptr, i32)
+
+define i1 @f(ptr %mem, i32 %a, i32 %b, ptr %expected) {
+  %eq = icmp eq i32 %a, %b
+  %sle = icmp sle i32 %a, %b
+  %z = icmp eq i32 %a, 0
+  %m = call ptr @__remill_compare_exchange_memory_32(ptr %mem, i64 16, ptr %expected, i32 %b)
+  %x = and i1 %eq, %sle
+  %y = and i1 %x, %z
+  ret i1 %y
+}
+```
+
+**Fixed.** Like BranchHintPass, this pass now excludes `__remill_compare_exchange*` (the `%m` call
+above is kept). Previously a surviving Remill CAS intrinsic was replaced by its arg0 (the memory pointer, which the
+call also returns), so the atomic operation was silently erased.
+
+#### 13.2.6 `SimplifyStackArithFlags` (removed)
+
+**Removed.** The files `lib/Passes/SimplifyStackArithFlags.{h,cpp}` were never built: they were not in the
+`anvill_passes` list in `lib/CMakeLists.txt`, they included non-existent headers (`anvill/Analysis/Utils.h`,
+`anvill/BranchAnalysis.h`), and `AddSimplifyStackArithFlags(fpm, bool)` was declared in Transforms.h but never
+defined. The files and the declaration have been deleted. A reimplementation does not need this pass.
+
+What it was meant to do: an IntrinsicPass over calls where `ParseFlagIntrinsic` succeeds. If `flag.over` is a
 Constant and `IsRelatedToStackPointer`, the call is replaced by a constant from
 `constant_flags = {OF:false, ZF:false, SIGN:true}`. Because `std::map::insert` does not overwrite, the
 constructor's attempt to set `SIGN` to `stack_pointer_is_signed` has no effect. Flags missing from the map
@@ -2152,10 +2435,14 @@ The LLVM **interpreter** (`llvm/ExecutionEngine/Interpreter.h`) evaluates slices
      `lifter.AddressOfEntity(gv)` succeeds: schedule `ptrtoint-CE → ConstantInt(addr)`;
    * otherwise: fail. The function is erased and the call returns `nullopt`.
 
-   Then for each scheduled pair: `ce->replaceAllUsesWith(ci); ce->destroyConstant()`.
-
-   **Gotcha:** this is RAUW on a uniqued ConstantExpr. It also rewrites uses in the *original* lifted
-   module.
+   **Fixed.** This step used to schedule pairs and run `ce->replaceAllUsesWith(ci); ce->destroyConstant()`.
+   That was RAUW on a uniqued ConstantExpr, so it also rewrote uses in the *original* lifted module, and for
+   the external `@__anvill_pc` the slice could never be made interpretable at all (jump tables were never
+   lowered). Now `SliceManager::makeInterpretable` rebuilds each constant operand of the copied slice
+   locally, recursively and with a cache: `ptrtoint @__anvill_pc` becomes 0, `ptrtoint` of a lifted entity
+   becomes its address (via `EntityLifter::AddressOfEntity`), other initialized globals stay, and a
+   global without an initializer makes the slice uninterpretable. Only the operands of the copied slice are
+   replaced (`op.set(new_constant)`); nothing outside the slice changes.
 8. `assert(remill::VerifyModule(mod))`, then return `id`.
 
 #### 13.3.3 `JumpTableAnalysis` (function analysis). File `lib/Passes/JumpTableAnalysis.cpp`
@@ -2242,31 +2529,129 @@ The pattern conditions are documented at length in the file's header comment:
 * If only one variant succeeds, return it. If both succeed, return the one with the smaller `upper - lower`
   (compared with `ule`). Ties go to unsigned.
 
-Example. This is from the file's header comment and equals `data/SwitchLoweringNeg.ll`, function `@_start`
-(aarch64-ish, 64-bit addresses):
+The golden case below is a small x86-64 jump table: `cmp`/`ja` bounds check, then `movslq` of a
+table-relative offset and an indirect jump. The `!anvill.memory` metadata gives `anvill-opt`'s memory provider
+the table bytes.
+
+Real IR: `tests/golden/passes/LowerSwitchIntrinsics/jump_table.ll`, run as `anvill-opt --passes=LowerSwitchIntrinsics`. Input:
 
 ```llvm
-18:
-  %19 = call i64 @_atoi()
-  %20 = trunc i64 %19 to i32
-  %21 = add i32 %20, 4
-  %22 = zext i32 %21 to i64
-  %23 = icmp ugt i32 %21, 7
-  br i1 %23, label %33, label %25
-25:
-  %26 = shl nuw nsw i64 %22, 2
-  %27 = add nuw nsw i64 %26, 4294983520
-  %28 = inttoptr i64 %27 to ptr
-  %29 = load i32, ptr %28, align 4
-  %30 = sext i32 %29 to i64
-  %31 = add nsw i64 %30, 4294983436
-  %32 = call i64 (i64, ...) @__anvill_complete_switch(i64 %31, i64 4294983452, i64 4294983464,
-                                                     i64 4294983476, i64 4294983484, i64 4294983496)
-  switch i64 %32, label %34 [ i64 0, label %35   i64 1, label %36   i64 2, label %37
-                              i64 3, label %38   i64 4, label %33 ]
+; A lifted jump table: a bounds check (x > 3 goes to %default), a load of a
+; 32-bit table entry at 0x401038 + 4*x, the target 0x401038 + entry, and
+; __anvill_complete_switch mapping the target to the case index of the
+; lifted targets. JumpTableAnalysis (Z3) finds the index %x and its bounds
+; [0, 3] from the dominating branch; LowerSwitchIntrinsics reads the table
+; from memory and replaces the dispatch with `switch i32 %x` whose default
+; is the bounds check's failure block. The default block's PHIs get an
+; incoming value for the new edge (the value from the bounds-check block).
+
+declare i64 @__anvill_complete_switch(i64, ...)
+
+define i32 @sub_401000__AII_B_0(i32 %x) {
+entry:
+  %oob = icmp ugt i32 %x, 3
+  br i1 %oob, label %default, label %dispatch
+
+dispatch:
+  %idx = zext i32 %x to i64
+  %off = shl nuw nsw i64 %idx, 2
+  %addr = add i64 %off, 4198456
+  %p = inttoptr i64 %addr to ptr
+  %entry_val = load i32, ptr %p, align 4
+  %rel = sext i32 %entry_val to i64
+  %target = add i64 %rel, 4198456
+  %sel = call i64 (i64, ...) @__anvill_complete_switch(i64 %target, i64 4198423, i64 4198429, i64 4198435, i64 4198441), !pc !0
+  switch i64 %sel, label %unreachable [ i64 0, label %case0
+                                        i64 1, label %case1
+                                        i64 2, label %case2
+                                        i64 3, label %case3 ], !pc !0
+
+unreachable:
+  unreachable
+
+case0:
+  br label %exit
+case1:
+  br label %exit
+case2:
+  br label %exit
+case3:
+  br label %exit
+
+default:
+  %d = phi i32 [ -1, %entry ]
+  br label %exit
+
+exit:
+  %r = phi i32 [ 100, %case0 ], [ 200, %case1 ], [ 300, %case2 ], [ 400, %case3 ], [ %d, %default ]
+  ret i32 %r
+}
+
+; Table entries are relative to the table at 0x401038:
+; 0x401017 0x40101d 0x401023 0x401029
+!anvill.memory = !{!1}
+!0 = !{i64 4198421}
+!1 = !{i64 4198456, !"dfffffffe5ffffffebfffffff1ffffff", !"r"}
 ```
 
-The analysis gives:
+Output (`jump_table.expected.ll`):
+
+```llvm
+declare i64 @__anvill_complete_switch(i64, ...)
+
+define i32 @sub_401000__AII_B_0(i32 %x) {
+entry:
+  %oob = icmp ugt i32 %x, 3
+  br i1 %oob, label %default, label %dispatch
+
+dispatch:                                         ; preds = %entry
+  %idx = zext i32 %x to i64
+  %off = shl nuw nsw i64 %idx, 2
+  %addr = add i64 %off, 4198456
+  %p = inttoptr i64 %addr to ptr
+  %entry_val = load i32, ptr %p, align 4
+  %rel = sext i32 %entry_val to i64
+  %target = add i64 %rel, 4198456
+  switch i32 %x, label %default [
+    i32 0, label %case0
+    i32 1, label %case1
+    i32 2, label %case2
+    i32 3, label %case3
+  ]
+
+unreachable:                                      ; No predecessors!
+  unreachable
+
+case0:                                            ; preds = %dispatch
+  br label %exit
+
+case1:                                            ; preds = %dispatch
+  br label %exit
+
+case2:                                            ; preds = %dispatch
+  br label %exit
+
+case3:                                            ; preds = %dispatch
+  br label %exit
+
+default:                                          ; preds = %dispatch, %entry
+  %d = phi i32 [ -1, %entry ], [ -1, %dispatch ]
+  br label %exit
+
+exit:                                             ; preds = %default, %case3, %case2, %case1, %case0
+  %r = phi i32 [ 100, %case0 ], [ 200, %case1 ], [ 300, %case2 ], [ 400, %case3 ], [ %d, %default ]
+  ret i32 %r
+}
+
+!anvill.memory = !{!0}
+
+!0 = !{i64 4198456, !"dfffffffe5ffffffebfffffff1ffffff", !"r"}
+```
+
+More cases in `tests/golden/passes/LowerSwitchIntrinsics/`: `missing_memory.ll`, `shared_target.ll`.
+
+For the unit-test data `data/SwitchLoweringNeg.ll` (function `@_start`, aarch64-ish, 64-bit addresses; not
+reproduced here), the analysis gives:
 
 * pc slice `[%30, %31]`, stop value `%29` (a load) → `sliceFunc.0: i64 (i32)`;
 * index slice from `%27`, stopping at `%19`; then forwarded past the trunc, so index = `%20` (i32)
@@ -2296,9 +2681,11 @@ Added by `AddLowerSwitchIntrinsics(fpm, memprov)`.
 
    This relies on the lifter's convention that switch case `k` corresponds to vararg `k+1` of the complete-switch call.
 4. `SwitchBuilder::CreateNativeSwitch(jt, binding)`:
-   * `new_switch = SwitchInst::Create(jt.indexRel.getIndex(), jt.defaultOut, (upper - lower + 1))`.
+   * If `lower > upper` (per the bounds' signedness), fail. The case count is `(upper - lower) + 1`,
+     computed without wrapping; if `upper - lower >= 4096` (`kMaxSwitchCases`), fail.
+   * `new_switch = SwitchInst::Create(jt.indexRel.getIndex(), jt.defaultOut, count)`.
      It is not inserted into a block.
-   * For `i = lower` while `bounds.lessThanOrEqual(i, upper)`, with `++i`:
+   * For `count` iterations, `i` starting at `lower` and incremented each time:
      * `addr = indexRel.apply(interp, i)`;
      * `off = ReadIntFrom(pcRel.getExpectedType(interp), addr)`. This reads `bitwidth/8` bytes via
        `MemoryProvider::Query(addr + k)`, which returns `tuple<uint8_t, ByteAvailability, BytePermission>`.
@@ -2307,29 +2694,139 @@ Added by `AddLowerSwitchIntrinsics(fpm, memprov)`.
      * `pc = pcRel.apply(interp, off)` and `bb = binding.Lookup(pc)`. A missing `bb` fails the switch;
      * if `bb != defaultOut`, `new_switch->addCase(ConstantInt(i), bb)`.
    * On any failure: `delete new_switch` and return nullopt.
-5. On success: `ReplaceInstWithInst(follower, new_switch)`. If `targetCall` has no uses, erase it.
-   Return `none()`.
+5. On success, fix the PHIs of the successors before replacing the terminator. Count, per successor block,
+   how many edges from this block the old and the new switch have:
+   * a successor that gains edges (e.g. the new default, or a block that the table reaches more often)
+     gets an incoming value for this block in each PHI: the existing value for this block, else the value
+     from a predecessor that dominates this block, else `undef`;
+   * a successor that loses edges gets `succ->removePredecessor(block)` once per lost edge (with the default
+     `KeepOneInputPHIs = false`), while this block is still a predecessor.
 
-Before and after, from the SwitchLoweringNeg test. The mock memory at 4294983520 holds the i32 offsets
-`[0x10, 0x3c, 0x3c, 0x1c, 0x28, 0x3c, 0x3c, 0x30]`:
+   Then `ReplaceInstWithInst(follower, new_switch)`. If `targetCall` has no uses, erase it. Return `none()`.
+
+Real IR: `tests/golden/passes/LowerSwitchIntrinsics/shared_target.ll`, run as `anvill-opt --passes=LowerSwitchIntrinsics`. Input:
 
 ```llvm
-; after
-25:
-  ; (%26..%31 now dead)
-  switch i32 %20, label %33 [ i32 -4, label %35   i32 -1, label %36
-                              i32 0,  label %37   i32 3,  label %38 ]
+; Table entries 1 and 2 both point to 0x40101d (case1), so case2 is no
+; longer a successor after lowering: its PHI drops the incoming value from
+; the dispatch block (previously left behind, which made the IR invalid).
+
+declare i64 @__anvill_complete_switch(i64, ...)
+
+define i32 @sub_401000__AII_B_0(i32 %x) {
+entry:
+  %oob = icmp ugt i32 %x, 3
+  br i1 %oob, label %default, label %dispatch
+
+dispatch:
+  %idx = zext i32 %x to i64
+  %off = shl nuw nsw i64 %idx, 2
+  %addr = add i64 %off, 4198456
+  %p = inttoptr i64 %addr to ptr
+  %entry_val = load i32, ptr %p, align 4
+  %rel = sext i32 %entry_val to i64
+  %target = add i64 %rel, 4198456
+  %sel = call i64 (i64, ...) @__anvill_complete_switch(i64 %target, i64 4198423, i64 4198429, i64 4198435, i64 4198441), !pc !0
+  switch i64 %sel, label %unreachable [ i64 0, label %case0
+                                        i64 1, label %case1
+                                        i64 2, label %case2
+                                        i64 3, label %case3 ], !pc !0
+
+unreachable:
+  unreachable
+
+case0:
+  br label %exit
+case1:
+  br label %exit
+case2:
+  %only_from_dispatch = phi i32 [ 300, %dispatch ]
+  br label %exit
+case3:
+  br label %exit
+
+default:
+  br label %exit
+
+exit:
+  %r = phi i32 [ 100, %case0 ], [ 200, %case1 ], [ %only_from_dispatch, %case2 ], [ 400, %case3 ], [ -1, %default ]
+  ret i32 %r
+}
+
+!anvill.memory = !{!1}
+!0 = !{i64 4198421}
+!1 = !{i64 4198456, !"dfffffffe5ffffffe5fffffff1ffffff", !"r"}
 ```
 
-The test expects 4 cases on indices {-4, -1, 0, 3}. Entries that resolve to the default-out PC
-(0x3c → 4294983496 → arg 5 → case 4 → `%33`) are omitted.
+Output (`shared_target.expected.ll`):
 
-Gotchas:
+```llvm
+declare i64 @__anvill_complete_switch(i64, ...)
 
-* The loop has no wrap guard. If `upper` is the maximum value for its width and signedness,
-  `++i` wraps and the loop never terminates, unless a memory read fails first.
-* `ReplaceInstWithInst` does not update PHIs in blocks that stop being successors, such as the old
-  default `%34`.
+define i32 @sub_401000__AII_B_0(i32 %x) {
+entry:
+  %oob = icmp ugt i32 %x, 3
+  br i1 %oob, label %default, label %dispatch
+
+dispatch:                                         ; preds = %entry
+  %idx = zext i32 %x to i64
+  %off = shl nuw nsw i64 %idx, 2
+  %addr = add i64 %off, 4198456
+  %p = inttoptr i64 %addr to ptr
+  %entry_val = load i32, ptr %p, align 4
+  %rel = sext i32 %entry_val to i64
+  %target = add i64 %rel, 4198456
+  switch i32 %x, label %default [
+    i32 0, label %case0
+    i32 1, label %case1
+    i32 2, label %case1
+    i32 3, label %case3
+  ]
+
+unreachable:                                      ; No predecessors!
+  unreachable
+
+case0:                                            ; preds = %dispatch
+  br label %exit
+
+case1:                                            ; preds = %dispatch, %dispatch
+  br label %exit
+
+case2:                                            ; No predecessors!
+  br label %exit
+
+case3:                                            ; preds = %dispatch
+  br label %exit
+
+default:                                          ; preds = %dispatch, %entry
+  br label %exit
+
+exit:                                             ; preds = %default, %case3, %case2, %case1, %case0
+  %r = phi i32 [ 100, %case0 ], [ 200, %case1 ], [ poison, %case2 ], [ 400, %case3 ], [ -1, %default ]
+  ret i32 %r
+}
+
+!anvill.memory = !{!0}
+
+!0 = !{i64 4198456, !"dfffffffe5ffffffe5fffffff1ffffff", !"r"}
+```
+
+More cases in `tests/golden/passes/LowerSwitchIntrinsics/`: `jump_table.ll`, `missing_memory.ll`.
+
+In the unit test `SwitchLoweringNeg` (mock memory at 4294983520 holding the i32 offsets
+`[0x10, 0x3c, 0x3c, 0x1c, 0x28, 0x3c, 0x3c, 0x30]`), the result has 4 cases on indices {-4, -1, 0, 3}. Entries
+that resolve to the default-out PC (0x3c → 4294983496 → arg 5 → case 4 → `%33`) are omitted.
+
+`missing_memory.ll` has no `!anvill.memory`: a table read fails, so the switch is left as it was.
+
+Notes:
+
+* **Fixed.** The loop used to run `for (i = lower; lessThanOrEqual(i, upper); ++i)`, which never terminates
+  when `upper` is the maximum value for its width and signedness (unless a memory read fails first). It is now
+  a counted loop with the 4096-case cap above.
+* **Fixed.** `ReplaceInstWithInst` does not update PHIs. Blocks that stopped being successors (like `case2`
+  above) kept an incoming entry for the dispatch block, and blocks reached by new edges lacked one, which
+  produced invalid IR (and an assertion in `removePredecessor` when it was called after the replacement).
 * The index value must dominate the switch. It does, because it dominates the check.
 
 
@@ -2366,21 +2863,48 @@ Algorithm:
 
 Example, from the code comment and the `SimpleCase` test data:
 
+Real IR: `tests/golden/passes/SinkSelectionsIntoBranchTargets/basic.ll`, run as `anvill-opt --passes=SinkSelectionsIntoBranchTargets`. Input:
+
 ```llvm
-; before
-  %2 = icmp eq i64 %1, 1
-  %3 = select i1 %2, i64 10, i64 20
-  br i1 %2, label %4, label %6
-4:  %5 = add i64 %3, 10
-6:  %7 = add i64 %3, 20
-; after
-  %2 = icmp eq i64 %1, 1
-  br i1 %2, label %4, label %6
-4:  %5 = add i64 10, 10
-6:  %7 = add i64 20, 20
+; A select whose condition is also the condition of a branch: uses of the
+; select dominated by the taken edge use the true value, uses dominated by the
+; not-taken edge use the false value. The select is erased once unused.
+
+define i32 @f(i1 %c, i32 %a, i32 %b) {
+entry:
+  %s = select i1 %c, i32 %a, i32 %b, !pc !0
+  br i1 %c, label %taken, label %not_taken
+taken:
+  %t = add i32 %s, 1
+  ret i32 %t
+not_taken:
+  %n = mul i32 %s, 2
+  ret i32 %n
+}
+
+!0 = !{i64 4096}
 ```
 
-The test expects `SimpleCase`: 2 replacements and 1 disposable. `MultipleSelects` (3 selects, same
+Output (`basic.expected.ll`):
+
+```llvm
+define i32 @f(i1 %c, i32 %a, i32 %b) {
+entry:
+  br i1 %c, label %taken, label %not_taken
+
+taken:                                            ; preds = %entry
+  %t = add i32 %a, 1
+  ret i32 %t
+
+not_taken:                                        ; preds = %entry
+  %n = mul i32 %b, 2
+  ret i32 %n
+}
+```
+
+More cases in `tests/golden/passes/SinkSelectionsIntoBranchTargets/`: `partial.ll`.
+
+The unit test (`tests/anvill_passes`) expects `SimpleCase`: 2 replacements and 1 disposable. `MultipleSelects` (3 selects, same
 condition): 6 and 3. `MultipleSelectUsages`: 6 and 1.
 
 Interaction: this is scheduled twice (§13.6). It feeds RemoveTrivialPhisAndSelects and cross-reference folding at
@@ -2390,8 +2914,8 @@ branch targets.
 
 Kind: function pass. It erases every call whose direct callee is named exactly `fpclassify`, `__fpclassifyd`,
 `__fpclassifyf` or `__fpclassifyld`, provided the call is `use_empty()`. The NOTE says it must run before
-lifted functions are renamed. Example (illustrative): `%r = call i32 @__fpclassifyd(double %x)` with no uses
-is deleted.
+lifted functions are renamed. Real IR: `tests/golden/passes/RemoveUnusedFPClassificationCalls/basic.ll` (all four
+names unused → erased; a used `__fpclassifyd` and an unused call to another function are kept).
 
 #### 13.4.3 `RemoveDelaySlotIntrinsics`. File `lib/Passes/RemoveDelaySlotIntrinsics.cpp`
 
@@ -2402,14 +2926,46 @@ returns `all()` if neither exists. For each call to either:
 mem = arg0; CopyMetadataTo(call, mem); call->RAUW(mem); erase.
 ```
 
-Example (illustrative), for SPARC delay slots:
+Real IR: `tests/golden/passes/RemoveDelaySlotIntrinsics/basic.ll`, run as `anvill-opt --passes=RemoveDelaySlotIntrinsics`. Input:
 
 ```llvm
-%m1 = call ptr @__remill_delay_slot_begin(ptr %m0)
-... %m2 = call ptr @__remill_write_memory_32(ptr %m1, ...)
-%m3 = call ptr @__remill_delay_slot_end(ptr %m2)
-; after: %m1 -> %m0, %m3 -> %m2
+; Calls to __remill_delay_slot_begin/__remill_delay_slot_end are replaced by
+; their memory-pointer argument; their metadata is copied onto the memory
+; pointer when it is an instruction.
+
+declare ptr @__remill_delay_slot_begin(ptr)
+declare ptr @__remill_delay_slot_end(ptr)
+declare ptr @__remill_write_memory_32(ptr, i64, i32)
+
+define ptr @f(ptr %mem) {
+  %m0 = call ptr @__remill_delay_slot_begin(ptr %mem), !pc !0
+  %m1 = call ptr @__remill_write_memory_32(ptr %m0, i64 16, i32 1)
+  %m2 = call ptr @__remill_delay_slot_end(ptr %m1), !pc !1
+  ret ptr %m2
+}
+
+!0 = !{i64 4096}
+!1 = !{i64 4100}
 ```
+
+Output (`basic.expected.ll`):
+
+```llvm
+declare ptr @__remill_delay_slot_begin(ptr)
+
+declare ptr @__remill_delay_slot_end(ptr)
+
+declare ptr @__remill_write_memory_32(ptr, i64, i32)
+
+define ptr @f(ptr %mem) {
+  %m1 = call ptr @__remill_write_memory_32(ptr %mem, i64 16, i32 1), !pc !0
+  ret ptr %m1
+}
+
+!0 = !{i64 4100}
+```
+
+More cases in `tests/golden/passes/RemoveDelaySlotIntrinsics/`: `absent.ll`.
 
 #### 13.4.4 `RemoveErrorIntrinsics`. File `lib/Passes/RemoveErrorIntrinsics.cpp`
 
@@ -2433,23 +2989,56 @@ Kind: function pass. It returns `all()` if the module has no `__remill_error`. S
      Then RAUW, drop and remove the old PHI.
 3. `deleteValue()` everything in `to_remove`. The result is `none()` if anything was removed.
 
-Example (illustrative):
+Real IR: `tests/golden/passes/RemoveErrorIntrinsics/basic.ll`, run as `anvill-opt --passes=RemoveErrorIntrinsics`. Input:
 
 ```llvm
-; before
-bb: %x = add i64 %a, 1
-    %m = call ptr @__remill_error(ptr %s, i64 %pc, ptr %mem)
-    %y = load i64, ptr %p
-    br label %join
-join: %v = phi i64 [ %y, %bb ], [ %z, %other ]
-; after
-bb: %x = add i64 %a, 1
-    unreachable
-join: (phi folded) uses of %v -> %z
+; A call to __remill_error and everything after it in its block is replaced by
+; `unreachable` (the call's metadata moves to the `unreachable`). Values
+; defined in the removed tail are replaced by undef.
+
+declare ptr @__remill_error(ptr, i64, ptr)
+
+define i32 @f(ptr %state, ptr %mem, i1 %c) {
+entry:
+  br i1 %c, label %bad, label %good
+
+bad:
+  %x = add i32 1, 2
+  %m = call ptr @__remill_error(ptr %state, i64 4096, ptr %mem), !pc !0
+  %after = add i32 %x, 3
+  ret i32 %after
+
+good:
+  ret i32 0
+}
+
+!0 = !{i64 4096}
 ```
 
-Gotcha: the successor's PHIs are fixed, but the CFG edge removal does not update any analyses beyond
-returning `none()`.
+Output (`basic.expected.ll`):
+
+```llvm
+declare ptr @__remill_error(ptr, i64, ptr)
+
+define i32 @f(ptr %state, ptr %mem, i1 %c) {
+entry:
+  br i1 %c, label %bad, label %good
+
+bad:                                              ; preds = %entry
+  %x = add i32 1, 2
+  unreachable, !pc !0
+
+good:                                             ; preds = %entry
+  ret i32 0
+}
+
+!0 = !{i64 4096}
+```
+
+More cases in `tests/golden/passes/RemoveErrorIntrinsics/`: `absent.ll`, `phi_incoming.ll`.
+
+Note: the successor's PHIs are fixed (see `phi_incoming.ll`), but the CFG edge removal does not update any
+analyses beyond returning `none()`.
 
 #### 13.4.5 `LowerRemillMemoryAccessIntrinsics`. File `lib/Passes/LowerRemillMemoryAccessIntrinsics.cpp`
 
@@ -2476,18 +3065,101 @@ non-volatile.
 Gotcha: in the by-reference write path, if the name did not end with f80/f128, `vt` would be a pointer type,
 so the code would load a pointer. That does not happen with real Remill names.
 
-Example (illustrative; addresses are tainted CEs in real code):
+Real IR: `tests/golden/passes/LowerRemillMemoryAccessIntrinsics/basic.ll`, run as `anvill-opt --passes=LowerRemillMemoryAccessIntrinsics`. Input:
 
 ```llvm
-; before
-%v  = call i32 @__remill_read_memory_32(ptr %mem, i64 %addr)
-%m2 = call ptr @__remill_write_memory_64(ptr %mem, i64 %a2, i64 %x)
-; after
-%1 = inttoptr i64 %addr to ptr
-%v = load i32, ptr %1
-%2 = inttoptr i64 %a2 to ptr
-store i64 %x, ptr %2          ; uses of %m2 -> %mem
+; Remill memory intrinsics become plain loads and stores through
+; `inttoptr` of the address; the memory pointer result of a write is
+; replaced by its memory-pointer argument. Metadata of the call is copied to
+; every new instruction.
+
+declare i8 @__remill_read_memory_8(ptr, i64)
+declare i16 @__remill_read_memory_16(ptr, i64)
+declare i32 @__remill_read_memory_32(ptr, i64)
+declare i64 @__remill_read_memory_64(ptr, i64)
+declare float @__remill_read_memory_f32(ptr, i64)
+declare double @__remill_read_memory_f64(ptr, i64)
+declare ptr @__remill_write_memory_8(ptr, i64, i8)
+declare ptr @__remill_write_memory_16(ptr, i64, i16)
+declare ptr @__remill_write_memory_32(ptr, i64, i32)
+declare ptr @__remill_write_memory_64(ptr, i64, i64)
+declare ptr @__remill_write_memory_f32(ptr, i64, float)
+declare ptr @__remill_write_memory_f64(ptr, i64, double)
+
+define ptr @f(ptr %mem, i64 %addr) {
+  %b = call i8 @__remill_read_memory_8(ptr %mem, i64 %addr), !pc !0
+  %h = call i16 @__remill_read_memory_16(ptr %mem, i64 %addr)
+  %w = call i32 @__remill_read_memory_32(ptr %mem, i64 %addr)
+  %q = call i64 @__remill_read_memory_64(ptr %mem, i64 %addr)
+  %fs = call float @__remill_read_memory_f32(ptr %mem, i64 %addr)
+  %fd = call double @__remill_read_memory_f64(ptr %mem, i64 %addr)
+  %m1 = call ptr @__remill_write_memory_8(ptr %mem, i64 16, i8 %b), !pc !1
+  %m2 = call ptr @__remill_write_memory_16(ptr %m1, i64 32, i16 %h)
+  %m3 = call ptr @__remill_write_memory_32(ptr %m2, i64 48, i32 %w)
+  %m4 = call ptr @__remill_write_memory_64(ptr %m3, i64 64, i64 %q)
+  %m5 = call ptr @__remill_write_memory_f32(ptr %m4, i64 80, float %fs)
+  %m6 = call ptr @__remill_write_memory_f64(ptr %m5, i64 96, double %fd)
+  ret ptr %m6
+}
+
+!0 = !{i64 4096}
+!1 = !{i64 4100}
 ```
+
+Output (`basic.expected.ll`):
+
+```llvm
+declare i8 @__remill_read_memory_8(ptr, i64)
+
+declare i16 @__remill_read_memory_16(ptr, i64)
+
+declare i32 @__remill_read_memory_32(ptr, i64)
+
+declare i64 @__remill_read_memory_64(ptr, i64)
+
+declare float @__remill_read_memory_f32(ptr, i64)
+
+declare double @__remill_read_memory_f64(ptr, i64)
+
+declare ptr @__remill_write_memory_8(ptr, i64, i8)
+
+declare ptr @__remill_write_memory_16(ptr, i64, i16)
+
+declare ptr @__remill_write_memory_32(ptr, i64, i32)
+
+declare ptr @__remill_write_memory_64(ptr, i64, i64)
+
+declare ptr @__remill_write_memory_f32(ptr, i64, float)
+
+declare ptr @__remill_write_memory_f64(ptr, i64, double)
+
+define ptr @f(ptr %mem, i64 %addr) {
+  %1 = inttoptr i64 %addr to ptr, !pc !0
+  %2 = load i8, ptr %1, align 1, !pc !0
+  %3 = inttoptr i64 %addr to ptr
+  %4 = load i16, ptr %3, align 2
+  %5 = inttoptr i64 %addr to ptr
+  %6 = load i32, ptr %5, align 4
+  %7 = inttoptr i64 %addr to ptr
+  %8 = load i64, ptr %7, align 8
+  %9 = inttoptr i64 %addr to ptr
+  %10 = load float, ptr %9, align 4
+  %11 = inttoptr i64 %addr to ptr
+  %12 = load double, ptr %11, align 8
+  store i8 %2, ptr inttoptr (i64 16 to ptr), align 1, !pc !1
+  store i16 %4, ptr inttoptr (i64 32 to ptr), align 2
+  store i32 %6, ptr inttoptr (i64 48 to ptr), align 4
+  store i64 %8, ptr inttoptr (i64 64 to ptr), align 8
+  store float %10, ptr inttoptr (i64 80 to ptr), align 4
+  store double %12, ptr inttoptr (i64 96 to ptr), align 8
+  ret ptr %mem
+}
+
+!0 = !{i64 4096}
+!1 = !{i64 4100}
+```
+
+More cases in `tests/golden/passes/LowerRemillMemoryAccessIntrinsics/`: `extended_float.ll`.
 
 Interaction: this exposes `inttoptr(CE over __anvill_sp)` loads and stores, which is exactly what
 RemoveStackPointerCExprs and RecoverBasicStackFrame consume (see `RecoverStackFrameInformation.ll`).
@@ -2511,13 +3183,91 @@ So a barrier is removed when it is adjacent to another barrier, or immediately f
 A barrier that follows an external call is also removed, because `prev` stays true. Scheduled calls are erased if
 `use_empty()`.
 
-Example (illustrative):
+Real IR: `tests/golden/passes/RemoveCompilerBarriers/basic.ll`, run as `anvill-opt --passes=RemoveCompilerBarriers`. Input:
 
 ```llvm
-call void asm sideeffect "", ""()
-call void asm sideeffect "", ""()     ; removed (consecutive)
-call void asm sideeffect "", ""()     ; removed
-%r = call double @__remill_fpu_op(...)  ; external -> the remaining first barrier is removed too
+; Compiler barriers are empty side-effecting inline asm calls. Runs of
+; consecutive barriers collapse to the first one, and a barrier directly
+; followed by a call to an external function is removed (the call already is
+; a barrier). A barrier followed by a non-call instruction is kept.
+
+declare void @external()
+define internal void @internal() {
+  ret void
+}
+
+define void @runs() {
+  call void asm sideeffect "", ""()
+  call void asm sideeffect "", ""()
+  call void asm sideeffect "", ""()
+  ret void
+}
+
+define void @before_external_call() {
+  call void asm sideeffect "", ""()
+  call void @external()
+  ret void
+}
+
+define void @before_internal_call() {
+  call void asm sideeffect "", ""()
+  call void @internal()
+  ret void
+}
+
+define i32 @separated(i32 %x) {
+  call void asm sideeffect "", ""()
+  %y = add i32 %x, 1
+  call void asm sideeffect "", ""()
+  ret i32 %y
+}
+
+define void @not_barriers() {
+  call void asm sideeffect "nop", ""()
+  call void asm "", ""()
+  call void asm sideeffect "nop", ""()
+  ret void
+}
+```
+
+Output (`basic.expected.ll`):
+
+```llvm
+declare void @external()
+
+define internal void @internal() {
+  ret void
+}
+
+define void @runs() {
+  call void asm sideeffect "", ""()
+  ret void
+}
+
+define void @before_external_call() {
+  call void @external()
+  ret void
+}
+
+define void @before_internal_call() {
+  call void asm sideeffect "", ""()
+  call void @internal()
+  ret void
+}
+
+define i32 @separated(i32 %x) {
+  call void asm sideeffect "", ""()
+  %y = add i32 %x, 1
+  call void asm sideeffect "", ""()
+  ret i32 %y
+}
+
+define void @not_barriers() {
+  call void asm sideeffect "nop", ""()
+  call void asm "", ""()
+  call void asm sideeffect "nop", ""()
+  ret void
+}
 ```
 
 #### 13.4.7 `LowerTypeHintIntrinsics`. File `lib/Passes/LowerTypeHintIntrinsics.cpp`
@@ -2529,12 +3279,48 @@ v = arg0->stripPointerCasts(); cast = IRBuilder(call).CreateBitOrPointerCast(v, 
 CopyMetadataTo(call, cast); call->RAUW(cast);
 ```
 
-After all calls are rewritten, `use_empty()` calls are erased. Example (illustrative):
+Real IR: `tests/golden/passes/LowerTypeHintIntrinsics/basic.ll`, run as `anvill-opt --passes=LowerTypeHintIntrinsics`. Input:
 
 ```llvm
-%p = call ptr @__anvill_type_hint_Si(i64 %x)
-; after
-%p = inttoptr i64 %x to ptr
+; Calls to __anvill_type_hint* functions are replaced by a bit/pointer cast of
+; their (pointer-cast-stripped) argument to the call's type.
+
+declare ptr @__anvill_type_hint_Sb(i64)
+declare i64 @__anvill_type_hint_L(ptr)
+declare ptr @__anvill_type_hint_S(ptr)
+
+define i32 @f(i64 %addr, ptr %p) {
+  %hinted = call ptr @__anvill_type_hint_Sb(i64 %addr), !pc !0
+  %v = load i32, ptr %hinted
+  %as_int = call i64 @__anvill_type_hint_L(ptr %p)
+  %same = call ptr @__anvill_type_hint_S(ptr %p)
+  store i64 %as_int, ptr %same
+  %unused = call ptr @__anvill_type_hint_Sb(i64 %addr)
+  ret i32 %v
+}
+
+!0 = !{i64 4096}
+```
+
+Output (`basic.expected.ll`):
+
+```llvm
+declare ptr @__anvill_type_hint_Sb(i64)
+
+declare i64 @__anvill_type_hint_L(ptr)
+
+declare ptr @__anvill_type_hint_S(ptr)
+
+define i32 @f(i64 %addr, ptr %p) {
+  %1 = inttoptr i64 %addr to ptr, !pc !0
+  %v = load i32, ptr %1, align 4
+  %2 = ptrtoint ptr %p to i64
+  store i64 %2, ptr %p, align 8
+  %3 = inttoptr i64 %addr to ptr
+  ret i32 %v
+}
+
+!0 = !{i64 4096}
 ```
 
 #### 13.4.8 `ConvertMasksToCasts`. File `lib/Passes/ConvertMasksToCasts.cpp`
@@ -2545,10 +3331,11 @@ Kind: function pass. Collection uses PatternMatch in one forward scan. The first
    `activeBits(C) * 2 == width` and `countTrailingZeros(~C) == activeBits`. This means 0xFF on i16, 0xFFFF on i32,
    0xFFFFFFFF on i64, and so on. Record `(inst, operand index of V, iN/2)`. The header comment shows
    `and i64 %v, 0xff → trunc i8`, but the code only accepts the half-width mask.
-2. `ashr (shl V, A), B` with `A == B`. The check compares `ConstantInt*` identity, which is value equality
-   for the same type. The result width must be one of 8/16/32/64/128. Record `(inst, i(width/2))`.
-   **Gotcha:** it does not check `A == width/2`. For example, `ashr(shl x, 48), 48` on i64 would be rewritten as
-   `sext(trunc to i32)`, which is wrong.
+2. `ashr (shl V, S), S` (equal shift amounts; the check compares `ConstantInt*` identity, which is value
+   equality for the same type) with `0 < S < N`, where N is the width. This sign-extends the low `N - S` bits of
+   `V`, so record `(inst, i(N - S))`. **Fixed:** this used to record `i(N/2)` whatever `S` was (only for
+   N ∈ {8, …, 128}), so `ashr(shl x, 48), 48` on i64 became `sext(trunc to i32)` instead of
+   `sext(trunc to i16)`. See `sign_extend.ll`.
 3. `add (shl V, N), C`, where N ∈ {8, 16, 32, 64, 128} and `C` has at least N trailing zeros. Record
    `(inst, C >> N)`.
 
@@ -2558,20 +3345,68 @@ from earlier rewrites.
 * mask: `t = trunc inst.op[k] to iN/2` and `z = zext t to iN`. Copy metadata to both. RAUW and erase.
 * shl_add: re-match `add(Instruction shl, ConstantInt)` and `shl(V, ConstantInt n)`. Build
   `a = add V, (C >> N)` and `s = shl a, n`. RAUW the add with `s`, and schedule the old `shl` for erasure.
-  **Gotcha:** this does not set `changed`. If only this rewrite fires, the pass returns `all()`.
-* shl_ashr: re-match. `t = trunc V to half` and `s = sext t to iN`. RAUW and erase. Schedule the old `shl`.
+  (**Fixed:** this rewrite now sets `changed`; it used to return `all()` when it was the only one that fired.)
+* shl_ashr: re-match. `t = trunc V to i(N - S)` and `s = sext t to iN`. RAUW and erase. Schedule the old `shl`.
 * Scheduled `shl`s with no remaining uses are erased.
 
-Example, from the header comment:
+Real IR: `tests/golden/passes/ConvertMasksToCasts/masks.ll`, run as `anvill-opt --passes=ConvertMasksToCasts`. Input:
 
 ```llvm
-%256 = shl i64 %255, 32
-%257 = ashr exact i64 %256, 32, !pc !70
-; after
-%t = trunc i64 %255 to i32           ; !pc !70 copied
-%257' = sext i32 %t to i64
-%m = and i64 %v, 4294967295   ->   %t2 = trunc i64 %v to i32 ; %m' = zext i32 %t2 to i64
+; (and V, M) where M keeps exactly the low half of the bits becomes
+; (zext (trunc V)). Other masks are unchanged.
+
+define i32 @low_half_i32(i32 %v) {
+  %r = and i32 %v, 65535, !pc !0
+  ret i32 %r
+}
+
+define i64 @low_half_i64_commuted(i64 %v) {
+  %r = and i64 4294967295, %v
+  ret i64 %r
+}
+
+define i64 @not_half(i64 %v) {
+  %r = and i64 %v, 65535
+  ret i64 %r
+}
+
+define i32 @not_low_bits(i32 %v) {
+  %r = and i32 %v, 65520
+  ret i32 %r
+}
+
+!0 = !{i64 4096}
 ```
+
+Output (`masks.expected.ll`):
+
+```llvm
+define i32 @low_half_i32(i32 %v) {
+  %1 = trunc i32 %v to i16, !pc !0
+  %2 = zext i16 %1 to i32, !pc !0
+  ret i32 %2
+}
+
+define i64 @low_half_i64_commuted(i64 %v) {
+  %1 = trunc i64 %v to i32
+  %2 = zext i32 %1 to i64
+  ret i64 %2
+}
+
+define i64 @not_half(i64 %v) {
+  %r = and i64 %v, 65535
+  ret i64 %r
+}
+
+define i32 @not_low_bits(i32 %v) {
+  %r = and i32 %v, 65520
+  ret i32 %r
+}
+
+!0 = !{i64 4096}
+```
+
+More cases in `tests/golden/passes/ConvertMasksToCasts/`: `shifted_add.ll`, `sign_extend.ll`.
 
 Purpose: fix truncated PC and SP displacements before stack analysis (see Optimize.cpp's comment).
 
@@ -2587,11 +3422,76 @@ Kind: function pass. Worklist algorithm:
 4. Loop until the worklist is empty.
 5. Erase the `remove` instructions that are `use_empty()`.
 
-Example (illustrative):
+Real IR: `tests/golden/passes/RemoveTrivialPhisAndSelects/basic.ll`, run as `anvill-opt --passes=RemoveTrivialPhisAndSelects`. Input:
 
 ```llvm
-%p = phi i64 [ %a, %b1 ], [ %a, %b2 ]   ->  uses of %p become %a
-%s = select i1 %c, i64 %p, i64 %p        ->  (next round) uses of %s become %a
+; PHIs whose incoming values are all the same value, and selects whose two
+; values are the same, are replaced by that value. Replacements are repeated
+; on the users (a worklist), so chains collapse.
+
+define i32 @f(i1 %c, i32 %x, i32 %y) {
+entry:
+  br i1 %c, label %a, label %b
+a:
+  br label %join
+b:
+  br label %join
+join:
+  %p = phi i32 [ %x, %a ], [ %x, %b ]
+  %s = select i1 %c, i32 %p, i32 %x
+  %q = phi i32 [ %y, %a ], [ %x, %b ]
+  %t = select i1 %c, i32 %q, i32 %q
+  %r = add i32 %s, %t
+  ret i32 %r
+}
+
+define i32 @loop(i32 %x, i32 %n) {
+entry:
+  br label %loop
+loop:
+  %i = phi i32 [ 0, %entry ], [ %next, %loop ]
+  %self = phi i32 [ %x, %entry ], [ %self, %loop ]
+  %next = add i32 %i, 1
+  %done = icmp eq i32 %next, %n
+  br i1 %done, label %exit, label %loop
+exit:
+  ret i32 %self
+}
+```
+
+Output (`basic.expected.ll`):
+
+```llvm
+define i32 @f(i1 %c, i32 %x, i32 %y) {
+entry:
+  br i1 %c, label %a, label %b
+
+a:                                                ; preds = %entry
+  br label %join
+
+b:                                                ; preds = %entry
+  br label %join
+
+join:                                             ; preds = %b, %a
+  %q = phi i32 [ %y, %a ], [ %x, %b ]
+  %r = add i32 %x, %q
+  ret i32 %r
+}
+
+define i32 @loop(i32 %x, i32 %n) {
+entry:
+  br label %loop
+
+loop:                                             ; preds = %loop, %entry
+  %i = phi i32 [ 0, %entry ], [ %next, %loop ]
+  %self = phi i32 [ %x, %entry ], [ %self, %loop ]
+  %next = add i32 %i, 1
+  %done = icmp eq i32 %next, %n
+  br i1 %done, label %exit, label %loop
+
+exit:                                             ; preds = %loop
+  ret i32 %self
+}
 ```
 
 There is no special handling for self-referential PHIs (`phi [%x, ...], [%p, loop]`): those are not trivial,
@@ -2601,8 +3501,8 @@ because the values differ.
 
 Kind: function pass. The constructor is `RemoveStackPointerCExprs(const StackFrameRecoveryOptions&)`.
 
-There is a stale duplicate header, `lib/Passes/RemoveStackPointerCExprs.h`, with a default constructor and
-no options. Use the one in `include/anvill/Passes/`.
+(A stale duplicate header, `lib/Passes/RemoveStackPointerCExprs.h`, with a default constructor and no options,
+has been removed; the real one is in `include/anvill/Passes/`.)
 
 Private class `ConcreteStackPointerResolver : NullCrossReferenceResolver`. Its `AddressOfEntity(c)` returns a fake
 concrete SP if `IsStackPointer(module, c)`, chosen by pointer size:
@@ -2625,28 +3525,60 @@ Algorithm:
    * If `xr.is_valid`, `xr.size < pointer bits`, and the CE type is an integer: replace the operand with
      `ConstantInt(ity, xr.Displacement(dl), signed)`. This folds narrow SP-derived values, such as comparisons
      and truncations, into constants computed using the fake concrete SP.
-     **Gotcha:** `Displacement()` only handles sizes 8/16/32/64, so an `i1` (icmp) result is always 0, i.e. `false`.
+     **Fixed:** `Displacement()` used to handle only sizes 8/16/32/64 and returned 0 otherwise, so every `i1`
+     (icmp) result folded to `false`. It now truncates to any width, so a comparison folds to its real value
+     under the fake concrete SP (`x86_flags.ll`: `sp - 12 < 0` is `false` with the positive fake SP).
    * If `xr.is_valid` but the value is full width or not an integer: leave it. RecoverBasicStackFrame handles these.
    * If it is not valid: `newi = ce->getAsInstruction()`, inserted **before** `ce_insert_loc`. Then
      `ce_insert_loc = newi`, so successive unfolded CEs stack upward and nested operands come first.
      `use.set(newi)` and push `newi` onto the worklist (its operands may be CEs too).
 5. The result is `none()` if anything changed.
 
-Example (header comment and test `RegressionRecoverStack.ll`; this shows the unfold path):
+The golden case is the header comment's example (test `RegressionRecoverStack.ll`): x86 flag computations over
+the stack pointer.
+
+Real IR: `tests/golden/passes/RemoveStackPointerCExprs/x86_flags.ll`, run as `anvill-opt --passes=RemoveStackPointerCExprs`. Input:
 
 ```llvm
-; before
-%1 = call zeroext i1 (i1, ...) @__remill_flag_computation_sign(
-       i1 zeroext icmp slt (i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -12), i32 0),
-       i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -12))
-; after (documented)
-%1 = icmp slt i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -12), 0
-%2 = call zeroext i1 (i1, ...) @__remill_flag_computation_sign(i1 zeroext %1,
-       i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -12))
+; 32-bit x86 (concrete ESP 0x00860000): a sign-flag computation on ESP - 12.
+; The comparison is an instruction (icmp constant expressions no longer
+; exist in LLVM 19), and the pointer-sized operands are left alone.
+
+@__anvill_sp = external global i8
+
+declare zeroext i1 @__remill_flag_computation_sign(i1 zeroext, ...)
+
+define i1 @slice() {
+  %c = icmp slt i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -12), 0
+  %1 = call zeroext i1 (i1, ...) @__remill_flag_computation_sign(i1 zeroext %c, i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -12))
+  %low = trunc i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -12) to i8
+  %lowi = trunc i8 trunc (i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -12) to i8) to i1
+  %r = and i1 %1, %lowi
+  ret i1 %r
+}
 ```
 
-With the current folder, an `icmp` CE over the SP folds validly (with size 1), so the operand is actually
-replaced by `i1 false` as described above. The test only checks that the module verifies.
+Output (`x86_flags.expected.ll`):
+
+```llvm
+@__anvill_sp = external global i8
+
+declare zeroext i1 @__remill_flag_computation_sign(i1 zeroext, ...)
+
+define i1 @slice() {
+  %c = icmp slt i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -12), 0
+  %1 = call zeroext i1 (i1, ...) @__remill_flag_computation_sign(i1 zeroext %c, i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -12))
+  %low = trunc i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -12) to i8
+  %lowi = trunc i8 -12 to i1
+  %r = and i1 %1, %lowi
+  ret i1 %r
+}
+```
+
+More cases in `tests/golden/passes/RemoveStackPointerCExprs/`: `narrow.ll`, `unresolvable.ll`.
+
+`narrow.ll` covers `trunc` and other narrow values; `unresolvable.ll` covers the unfold path (a CE the folder
+cannot resolve becomes instructions in the entry block).
 
 #### 13.4.11 `RecoverBasicStackFrame`. File `lib/Passes/RecoverBasicStackFrame.cpp`
 
@@ -2682,20 +3614,33 @@ Algorithm:
      * The name is `F.getName() + ".frame_type"`. If a StructType with that name already exists, return it.
      * `frame_size = max(1, min(max_stack_frame_size, padding + size))`.
      * `slot = lcm(ptr_size, word)` and `num_slots = ceil(frame_size / slot)`.
-     * The type is `StructType::create({ [num_slots x word_ty] }, name)`, a non-packed struct with one array.
-     * Gotcha: the array element count is `num_slots`, where slots are sized by `slot`. When `word == ptr_size`,
-       this gives a byte size of `num_slots * word`.
+     * The type is `StructType::create({ [num_slots * slot / word x word_ty] }, name)`, a non-packed struct with
+       one array of words. **Fixed:** the element count used to be `num_slots`, which is only right when
+       `word == ptr_size`; with `--stack_word_size=1` a 40-byte frame was `[5 x i8]` and every access past byte
+       5 was out of bounds (`padding_and_word_size.ll`).
+   * **Fixed (alignment).** Before the type is built, `lowest` is rounded down and `highest` rounded up to a
+     multiple of `word`, relative to the SP on entry. The frame then starts and ends on word boundaries of the
+     real stack, so a pointer-sized value such as the return address occupies exactly one frame word.
+     Previously the frame started at the exact lowest accessed offset (e.g. -12 on a 64-bit target), frame
+     words straddled the return-address slot, and SplitStackFrameAtReturnAddress produced out-of-bounds
+     accesses.
    * `base_stack_offset = lowest - lower_pad`. This is the same for both growth directions.
    * In the entry block, at the first insertion point: `frame = alloca <frame_type>`. All the instructions created
      below are inserted right after it, in the entry block, with the same IRBuilder.
-   * If `stack_offset_metadata_name` is set, attach metadata `"__anvill_stack_zero"` = `!{iPTR base}`, where
-     * if the stack grows down: `base = highest + higher_pad - word`;
-     * otherwise: `base = lowest - lower_pad + word`.
-   * Initialization, according to `stack_frame_struct_init_procedure`:
-     * `kZeroes`: `store zeroinitializer, frame`.
-     * `kUndef`: `store undef, frame`.
+   * If `stack_offset_metadata_name` is set, attach metadata `"__anvill_stack_zero"` = `!{iPTR -base_stack_offset}`:
+     the offset, from the start of the frame alloca, of the SP on entry (where `__anvill_stack_0` lands).
+     **Fixed:** it used to be `highest + higher_pad - word` (grows down) or `lowest - lower_pad + word` (grows
+     up), which mixed stack-relative and frame-relative offsets and made every `stack_offset` that
+     SplitStackFrameAtReturnAddress derives from it off by a few bytes.
+   * Initialization, according to `stack_frame_struct_init_procedure`. Let `n = min(padding + size, alloc size of
+     the frame type)`; the minimum matters when the frame was clamped to `max_stack_frame_size`.
+     * `kZeroes` / `kUndef`: for `i` in `0, word, 2·word, …` up to `< n`: `store iW 0` (or `undef`) to
+       `gep frame, 0, 0, i/word`. **Fixed:** this used to be one `store zeroinitializer/undef, frame` of the
+       whole frame; after SplitStackFrameAtReturnAddress splits the frame, that store was redirected into the
+       first piece and wrote past its end. And the per-word loop must stop at the allocated size
+       (`clamped_frame.ll`).
      * `kNone`: nothing.
-     * `kSymbolic`: for `i` in `0, word, 2·word, …` up to `< padding + size`:
+     * `kSymbolic`: for `i` in `0, word, 2·word, …` up to `< n`:
        * `gep frame, 0, 0, i/word`;
        * load the GV named `__anvill_stack_<sfx><abs(off)>` (type `word_ty`) and store it there;
        * `off` starts at `base_stack_offset` and increases by `word`.
@@ -2714,39 +3659,152 @@ Algorithm:
      * `use->set(ptr)`. The code uses `use->set`, not RAUW, because the constant may be shared with other functions.
 5. `assert(EnumerateStackPointerUsages(F).empty())` and return `none()`.
 
-Example, from `data/RecoverStackFrameInformation.ll` (i386; 12 instructions with 14 SP uses):
+The golden cases use one small x86-64 function: the return address at [sp+0], a local at [sp-12] and a stack
+argument at [sp+8]. After word alignment the frame spans [-16, +16) (4 words).
+
+Real IR: `tests/golden/passes/RecoverBasicStackFrame/init_none.ll`, run as `anvill-opt --passes=RecoverBasicStackFrame --stack_init=none`. Input:
 
 ```llvm
-; before (excerpt)
-store i32 ptrtoint (ptr @__anvill_ra to i32), ptr inttoptr (i32 ptrtoint (ptr @__anvill_sp to i32) to ptr)
-store i32 %0, ptr inttoptr (i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 4) to ptr)
-%6 = load i32, ptr inttoptr (i32 add (i32 sub (i32 ptrtoint (ptr @__anvill_sp to i32), i32 16), i32 20) to ptr)
-store i32 add (i32 sub (i32 ptrtoint (ptr @__anvill_sp to i32), i32 16), i32 12),
-      ptr inttoptr (i32 add (i32 sub (i32 ptrtoint (ptr @__anvill_sp to i32), i32 16), i32 -4) to ptr)
+; Every use of a constant expression derived from `__anvill_sp` becomes a
+; GEP into a new frame alloca (`%<function>.frame_type` = { [N x iW] },
+; W = word size). The frame spans the lowest to the highest accessed offset
+; (here -12 .. +12, rounded up to words). With --stack_offset_metadata, the
+; alloca carries `__anvill_stack_zero` = the frame index of offset 0.
+; Initialization (--stack_init=none):
+;   symbolic: each word is loaded from @__anvill_stack_{minus,plus}_<off>
+;   zeroes / undef: one store of zeroinitializer / undef
+;   none: nothing
+
+@__anvill_sp = external global i8
+@__anvill_ra = external global i8
+
+; RA at [sp+0], a local at [sp-12], a stack argument at [sp+8].
+define i32 @sub_401000__AI_B_0(i32 %x) {
+  store i64 ptrtoint (ptr @__anvill_ra to i64), ptr inttoptr (i64 ptrtoint (ptr @__anvill_sp to i64) to ptr), !pc !0
+  store i32 %x, ptr inttoptr (i64 add (i64 ptrtoint (ptr @__anvill_sp to i64), i64 -12) to ptr)
+  %arg = load i32, ptr inttoptr (i64 add (i64 ptrtoint (ptr @__anvill_sp to i64), i64 8) to ptr)
+  %l = load i32, ptr inttoptr (i64 add (i64 ptrtoint (ptr @__anvill_sp to i64), i64 -12) to ptr)
+  %addr = add i64 ptrtoint (ptr @__anvill_sp to i64), -4
+  %r = add i32 %l, %arg
+  ret i32 %r
+}
+
+!0 = !{i64 4198400}
 ```
 
-Expected analysis: lowest = -28, highest = 16 (12 + sizeof(i32)), size = 44, 14 uses. The frame type for i386
-with word 4 has total size 48 (12 slots), or 176 with 128 bytes of padding.
+Output (`init_none.expected.ll`):
 
 ```llvm
-; after (illustrative shape, kZeroes)
-%frame = alloca %sub_80482e0__Ai_S_Sb_S_Sbi_B_0.frame_type      ; type { [12 x i32] }
-store %...frame_type zeroinitializer, ptr %frame
-%g0 = getelementptr %...frame_type, ptr %frame, i32 0, i32 0, i32 7   ; offset 0 -> z=28 -> slot 7
-store i32 ptrtoint (ptr @__anvill_ra to i32), ptr %g0
-%g1 = getelementptr ..., i32 0, i32 0, i32 8                         ; sp+4
-store i32 %0, ptr %g1
-; store i32 (sp-16+12 = sp-4), ptr (sp-16-4 = sp-20):
-%g2 = getelementptr ..., i32 0, i32 0, i32 6                         ; value: off -4  -> z=24 -> slot 6
-%i2 = ptrtoint ptr %g2 to i32                                         ; integer-typed operand -> ptrtoint
-%g3 = getelementptr ..., i32 0, i32 0, i32 2                         ; ptr:   off -20 -> z=8  -> slot 2
-store i32 %i2, ptr %g3
+%sub_401000__AI_B_0.frame_type = type { [4 x i64] }
+
+@__anvill_sp = external global i8
+@__anvill_ra = external global i8
+
+define i32 @sub_401000__AI_B_0(i32 %x) {
+  %1 = alloca %sub_401000__AI_B_0.frame_type, align 8, !__anvill_stack_zero !0
+  %2 = getelementptr %sub_401000__AI_B_0.frame_type, ptr %1, i32 0, i32 0, i32 2
+  %3 = getelementptr %sub_401000__AI_B_0.frame_type, ptr %1, i32 0, i32 0, i32 0
+  %4 = getelementptr i32, ptr %3, i32 1
+  %5 = getelementptr %sub_401000__AI_B_0.frame_type, ptr %1, i32 0, i32 0, i32 3
+  %6 = getelementptr %sub_401000__AI_B_0.frame_type, ptr %1, i32 0, i32 0, i32 0
+  %7 = getelementptr i32, ptr %6, i32 1
+  %8 = getelementptr %sub_401000__AI_B_0.frame_type, ptr %1, i32 0, i32 0, i32 2
+  %9 = ptrtoint ptr %8 to i64
+  store i64 ptrtoint (ptr @__anvill_ra to i64), ptr %2, align 8, !pc !1
+  store i32 %x, ptr %4, align 4
+  %arg = load i32, ptr %5, align 4
+  %l = load i32, ptr %7, align 4
+  %addr = add i64 %9, -4
+  %r = add i32 %l, %arg
+  ret i32 %r
+}
+
+!0 = !{i64 16}
+!1 = !{i64 4198400}
 ```
+
+More cases in `tests/golden/passes/RecoverBasicStackFrame/`: `clamped_frame.ll`, `init_symbolic.ll`, `init_undef.ll`, `init_zeroes.ll`, `no_stack_uses.ll`, `padding_and_word_size.ll`.
+
+For the unit-test data `data/RecoverStackFrameInformation.ll` (i386; 12 instructions with 14 SP uses), the
+analysis gives lowest = -28, highest = 16 (12 + sizeof(i32)), size = 44. With word 4 the frame is 48 bytes
+(12 words), or 176 with 128 bytes of padding.
+
+Real IR: `tests/golden/passes/RecoverBasicStackFrame/init_zeroes.ll`, run as `anvill-opt --passes=RecoverBasicStackFrame --stack_init=zeroes`. Input:
+
+```llvm
+; Every use of a constant expression derived from `__anvill_sp` becomes a
+; GEP into a new frame alloca (`%<function>.frame_type` = { [N x iW] },
+; W = word size). The frame spans the lowest to the highest accessed offset
+; (here -12 .. +12, rounded up to words). With --stack_offset_metadata, the
+; alloca carries `__anvill_stack_zero` = the frame index of offset 0.
+; Initialization (--stack_init=zeroes):
+;   symbolic: each word is loaded from @__anvill_stack_{minus,plus}_<off>
+;   zeroes / undef: one store of zeroinitializer / undef
+;   none: nothing
+
+@__anvill_sp = external global i8
+@__anvill_ra = external global i8
+
+; RA at [sp+0], a local at [sp-12], a stack argument at [sp+8].
+define i32 @sub_401000__AI_B_0(i32 %x) {
+  store i64 ptrtoint (ptr @__anvill_ra to i64), ptr inttoptr (i64 ptrtoint (ptr @__anvill_sp to i64) to ptr), !pc !0
+  store i32 %x, ptr inttoptr (i64 add (i64 ptrtoint (ptr @__anvill_sp to i64), i64 -12) to ptr)
+  %arg = load i32, ptr inttoptr (i64 add (i64 ptrtoint (ptr @__anvill_sp to i64), i64 8) to ptr)
+  %l = load i32, ptr inttoptr (i64 add (i64 ptrtoint (ptr @__anvill_sp to i64), i64 -12) to ptr)
+  %addr = add i64 ptrtoint (ptr @__anvill_sp to i64), -4
+  %r = add i32 %l, %arg
+  ret i32 %r
+}
+
+!0 = !{i64 4198400}
+```
+
+Output (`init_zeroes.expected.ll`):
+
+```llvm
+%sub_401000__AI_B_0.frame_type = type { [4 x i64] }
+
+@__anvill_sp = external global i8
+@__anvill_ra = external global i8
+
+define i32 @sub_401000__AI_B_0(i32 %x) {
+  %1 = alloca %sub_401000__AI_B_0.frame_type, align 8, !__anvill_stack_zero !0
+  %2 = getelementptr %sub_401000__AI_B_0.frame_type, ptr %1, i32 0, i32 0, i32 0
+  store i64 0, ptr %2, align 8
+  %3 = getelementptr %sub_401000__AI_B_0.frame_type, ptr %1, i32 0, i32 0, i32 1
+  store i64 0, ptr %3, align 8
+  %4 = getelementptr %sub_401000__AI_B_0.frame_type, ptr %1, i32 0, i32 0, i32 2
+  store i64 0, ptr %4, align 8
+  %5 = getelementptr %sub_401000__AI_B_0.frame_type, ptr %1, i32 0, i32 0, i32 3
+  store i64 0, ptr %5, align 8
+  %6 = getelementptr %sub_401000__AI_B_0.frame_type, ptr %1, i32 0, i32 0, i32 2
+  %7 = getelementptr %sub_401000__AI_B_0.frame_type, ptr %1, i32 0, i32 0, i32 0
+  %8 = getelementptr i32, ptr %7, i32 1
+  %9 = getelementptr %sub_401000__AI_B_0.frame_type, ptr %1, i32 0, i32 0, i32 3
+  %10 = getelementptr %sub_401000__AI_B_0.frame_type, ptr %1, i32 0, i32 0, i32 0
+  %11 = getelementptr i32, ptr %10, i32 1
+  %12 = getelementptr %sub_401000__AI_B_0.frame_type, ptr %1, i32 0, i32 0, i32 2
+  %13 = ptrtoint ptr %12 to i64
+  store i64 ptrtoint (ptr @__anvill_ra to i64), ptr %6, align 8, !pc !1
+  store i32 %x, ptr %8, align 4
+  %arg = load i32, ptr %9, align 4
+  %l = load i32, ptr %11, align 4
+  %addr = add i64 %13, -4
+  %r = add i32 %l, %arg
+  ret i32 %r
+}
+
+!0 = !{i64 16}
+!1 = !{i64 4198400}
+```
+
+More cases in `tests/golden/passes/RecoverBasicStackFrame/`: `clamped_frame.ll`, `init_none.ll`, `init_symbolic.ll`, `init_undef.ll`, `no_stack_uses.ll`, `padding_and_word_size.ll`.
 
 The test also checks that the alloca is the first instruction and that there are 14 GEPs in the entry block.
 
 `data/SplitStackFrameAtReturnAddress.ll` shows the kSymbolic output on the same function. It has 44
-`__anvill_stack_minus_28 … plus_15` i8 globals (`word = 1`), so the frame is `<{ [44 x i8] }>`.
+`__anvill_stack_minus_28 … plus_15` i8 globals (`word = 1`), so the frame is `<{ [44 x i8] }>`. The golden
+`init_symbolic.ll` shows the kSymbolic output for the x86-64 function.
 
 Interaction: SROA runs afterward. Then SplitStackFrameAtReturnAddress looks the alloca up by the frame type name.
 
@@ -2765,8 +3823,8 @@ Algorithm:
    * If the user is a `BitCast`, `PtrToInt` or `IntToPtr`, push `(user, offset)`.
    * If the user is a `GetElementPtr` and `accumulateConstantOffset` succeeds, push `(gep, offset + gepoff)`.
 
-   Gotcha: the `seen` set is never inserted into, so a user that consumes the same value twice is walked twice
-   and its uses are recorded twice.
+   **Fixed:** the `seen` set (of Uses) was never inserted into, so a user that consumes the same value twice was
+   walked twice and its uses recorded twice. Each Use is now visited once.
 3. If there are no uses, return `all()`.
 4. If `stack_offset_metadata_name` is set, run **AnnotateStackUses**:
    * Read the `__anvill_stack_zero` metadata on the alloca. If it is not `!{ConstantInt Z}`, return.
@@ -2794,12 +3852,13 @@ Algorithm:
      * call `SubstituteUse` for each use.
 
      The subframes are created as:
-     * `above` → `("parameters", "locals", ceil(ra_off / ptr))`;
-     * `below` → `("locals", "parameters", ceil((allocSize(frame) - ra_end) / ptr))`;
+     * `above` (frame offsets below the RA, i.e. lower addresses) → `("locals", "parameters", ceil(ra_off / ptr))`;
+     * `below` (frame offsets past the RA, i.e. higher addresses) → `("parameters", "locals",
+       ceil((allocSize(frame) - ra_end) / ptr))`;
      * `at` → `("return_address_loc", "return_address_loc", 1)`.
 
-     The naming looks inverted for downward-growing stacks. Offsets below the RA are the callee's locals, but
-     they are named "parameters". The code is as written.
+     So when the stack grows down, the part below the return address is `%locals` and the part above it (the
+     caller's outgoing arguments) is `%parameters`. **Fixed:** the two names used to be swapped.
    * Then for each `to_replace (old → new)`: `old->dropAllReferences(); old->RAUW(new); old->eraseFromParent()`.
      The original frame alloca is left in place for DCE or SROA.
 6. Return `none()`.
@@ -2830,69 +3889,203 @@ Algorithm:
     GEP's own uses were also recorded, at their accumulated offsets, and are rewritten separately.
   * otherwise, split the indices into a constant prefix and the rest:
     * if the prefix is empty: `use->set(bitorptrcast ret)`;
-    * else compute `sub_off` for the prefix and `sub_ret = DemandedOffset(off + sub_off)`, then build
-      `new_gep = gep indexedType(prefix), bitcast(ret), rest` and schedule `to_replace[user] = new_gep`.
-      **Gotcha:** the code uses `ret`, not `sub_ret`, as the base, so the prefix offset is lost. Also, the
-      variable indices may be defined after the entry block, so the new GEP (inserted before the alloca) could
-      violate dominance.
+    * else compute `sub_off` for the prefix and `sub_ret = DemandedOffset(off + sub_off)`, then build, **at the
+      old GEP's position**, `new_gep = gep indexedType(prefix), bitcast(sub_ret), [0, rest...]` and schedule
+      `to_replace[user] = new_gep`. The leading zero index is needed because `indexedType(prefix)` is the type
+      that the variable indices index into. **Fixed:** the base used to be `ret` (losing the prefix offset), the
+      leading zero was missing, and the GEP was inserted before the alloca in the entry block, where the variable
+      indices may not be defined yet. See `variable_index.ll`.
 * `ICmp`, `PHI`, `Select` and the default case: `ptrtoint` if `use_inst` has an integer type, otherwise
   `bitorptrcast` to `use_inst`'s type; then `use->set(...)`.
 
-Example, from `data/SplitStackFrameAtReturnAddress.ll` (i386, frame `<{ [44 x i8] }>`, RA stored at byte 28):
+The golden case runs RecoverBasicStackFrame first (as the pipeline does) on the x86-64 function from §13.4.11,
+so the frame has a return address store at frame offset 16:
+
+Real IR: `tests/golden/passes/SplitStackFrameAtReturnAddress/after_recovery.ll`, run as `anvill-opt --passes=RecoverBasicStackFrame,SplitStackFrameAtReturnAddress --stack_init=zeroes`. Input:
 
 ```llvm
-; before (excerpt)
-%4  = alloca %sub_80482e0__Ai_S_Sb_S_Sbi_B_0.frame_type, align 8
-%93 = getelementptr %...frame_type, ptr %4, i32 0, i32 0, i32 28
-%94 = bitcast ptr %93 to ptr
-store i32 ptrtoint (ptr @__anvill_ra to i32), ptr %94, align 4
-%95 = getelementptr %...frame_type, ptr %4, i32 0, i32 0, i32 32
-%96 = bitcast ptr %95 to ptr
-store i32 %0, ptr %96, align 4
-; after (illustrative; options default: stack grows down)
-%parameters         = alloca i32, i32 7     ; bytes [0,28)   ("above")
-%locals             = alloca i32, i32 3     ; bytes [32,44)  ("below")
-%return_address_loc = alloca i32, i32 1     ; bytes [28,32)
-%r0 = getelementptr i32, ptr %return_address_loc, i32 0
-store i32 ptrtoint (ptr @__anvill_ra to i32), ptr %r0
-%l0 = getelementptr i32, ptr %locals, i32 0
-store i32 %0, ptr %l0
-%4  = alloca %...frame_type                ; now dead
+; After RecoverBasicStackFrame, the frame is split at the slot that holds the
+; return address into three allocas: the callee's locals (lower addresses),
+; `return_address_loc`, and the caller's stack `parameters` (higher
+; addresses). Uses are rewritten to point into the matching part and get
+; `stack_offset` metadata (the displacement from the stack pointer at
+; function entry). Previously the locals/parameters names were swapped.
+
+@__anvill_sp = external global i8
+@__anvill_ra = external global i8
+
+; RA at [sp+0], a local at [sp-12], a stack argument at [sp+8].
+define i32 @sub_401000__AI_B_0(i32 %x) {
+  store i64 ptrtoint (ptr @__anvill_ra to i64), ptr inttoptr (i64 ptrtoint (ptr @__anvill_sp to i64) to ptr), !pc !0
+  store i32 %x, ptr inttoptr (i64 add (i64 ptrtoint (ptr @__anvill_sp to i64), i64 -12) to ptr)
+  %arg = load i32, ptr inttoptr (i64 add (i64 ptrtoint (ptr @__anvill_sp to i64), i64 8) to ptr)
+  %l = load i32, ptr inttoptr (i64 add (i64 ptrtoint (ptr @__anvill_sp to i64), i64 -12) to ptr)
+  %addr = add i64 ptrtoint (ptr @__anvill_sp to i64), -4
+  %r = add i32 %l, %arg
+  ret i32 %r
+}
+
+!0 = !{i64 4198400}
 ```
+
+Output (`after_recovery.expected.ll`):
+
+```llvm
+%sub_401000__AI_B_0.frame_type = type { [4 x i64] }
+
+@__anvill_sp = external global i8
+@__anvill_ra = external global i8
+
+define i32 @sub_401000__AI_B_0(i32 %x) {
+  %locals = alloca i64, i64 2, align 8, !stack_offset !0
+  %1 = getelementptr i64, ptr %locals, i32 1, !stack_offset !1
+  %2 = getelementptr i32, ptr %locals, i32 1, !stack_offset !0
+  %parameters = alloca i64, i64 1, align 8, !stack_offset !2
+  %return_address_loc = alloca i64, i64 1, align 8, !stack_offset !3
+  %3 = ptrtoint ptr %return_address_loc to i64, !stack_offset !3
+  %4 = ptrtoint ptr %return_address_loc to i64, !stack_offset !3
+  %5 = alloca %sub_401000__AI_B_0.frame_type, align 8, !stack_offset !4
+  store i64 0, ptr %locals, align 8
+  store i64 0, ptr %1, align 8
+  store i64 0, ptr %return_address_loc, align 8
+  store i64 0, ptr %parameters, align 8
+  store i64 ptrtoint (ptr @__anvill_ra to i64), ptr %return_address_loc, align 8, !pc !5
+  store i32 %x, ptr %2, align 4
+  %arg = load i32, ptr %parameters, align 4
+  %l = load i32, ptr %2, align 4
+  %addr = add i64 %4, -4
+  %r = add i32 %l, %arg
+  ret i32 %r
+}
+
+!0 = !{i64 12}
+!1 = !{i64 8}
+!2 = !{i64 -8}
+!3 = !{i64 0}
+!4 = !{i64 16}
+!5 = !{i64 4198400}
+```
+
+More cases in `tests/golden/passes/SplitStackFrameAtReturnAddress/`: `full_cleanup.ll`, `variable_index.ll`.
+
+The `stack_offset` values follow this convention for a downward-growing stack: a positive value is the depth
+below the SP on entry. Here the local at `[sp-12]` is `!{i64 12}`, the stack argument at `[sp+8]` is
+`!{i64 -8}`, the return address at `[sp+0]` is `!{i64 0}`, and the (now dead) whole-frame alloca, which starts
+at `sp-16`, is `!{i64 16}`.
 
 #### 13.4.13 `CombineAdjacentShifts`. File `lib/Passes/CombineAdjacentShifts.cpp`
 
 Kind: function pass. Matcher:
 
 ```
-m_AShr(m_Shl(m_Value(V), m_ConstantInt(shift_right /* = shl amount A */)), m_ConstantInt(shift_left /* = ashr amount B */))
+m_AShr(m_Shl(m_Value(V), m_ConstantInt(shift_left /* = shl amount A */)), m_ConstantInt(shift_right /* = ashr amount B */))
 ```
 
-The variable names are swapped relative to their meaning. The condition is that V is an integer type,
-`B > A`, and `B * 2 == width`.
+The condition is that V is an integer type of width W, `A * 2 == W` and `A > B`: the shl moves the low half
+of V into the high half, and the ashr then shifts it back by less than it was shifted.
 
 Rewrite, inserted before the ashr:
 
 ```
-t = trunc V to iB
+t = trunc V to iA          ; the low half
 s = sext t to iW
-r = shl s, (B - A)
+r = shl s, (A - B)
 ```
 
 Metadata: V → t, ashr → s, the shl → r. Then RAUW the ashr with r and erase it. The old shl is left for DCE.
-The comment states the intended identity: `(ashr (shl V, A), B)` with `A = W/2 > B` becomes
-`shl(sext(trunc V to iA)), A - B`. **Gotcha: because of the swapped captures, the code applies the rewrite when
-the ashr amount is the half-width and larger than the shl amount. That is not semantics-preserving.** For example,
-`ashr(shl x, 8), 32` on i64 is rewritten to `sext(trunc x to i32) << 24`. A faithful reimplementation should decide
-whether to keep this behaviour. The intended version is
-`A == W/2 && B < A → shl(sext(trunc V to i(W/2))), A - B`.
+This is the identity `(ashr (shl V, W/2), B) == (shl (sext (trunc V to iW/2)), W/2 - B)` for `B < W/2`.
 
-Example of the intended behaviour (illustrative):
+**Fixed.** The captures used to be swapped (`m_ConstantInt(shift_right)` bound the shl amount), so the rewrite
+fired when the *ashr* amount was the half width and larger than the shl amount, which is not
+semantics-preserving: `ashr(shl x, 8), 32` on i64 became `sext(trunc x to i32) << 24`. `basic.ll` checks both the
+rewritten pattern and that the swapped shape is now left alone.
+
+Real IR: `tests/golden/passes/CombineAdjacentShifts/basic.ll`, run as `anvill-opt --passes=CombineAdjacentShifts`. Input:
 
 ```llvm
-%a = shl i64 %v, 32
-%b = ashr i64 %a, 8
-; -> %t = trunc i64 %v to i32 ; %s = sext i32 %t to i64 ; %b' = shl i64 %s, 24
+; (ashr (shl V, A), B) with A = N/2 and B < A sign-extends the low half of V
+; and shifts it left by A - B:
+;   trunc V to iA ; sext to iN ; shl by (A - B)
+; Other shift amounts are left alone. Previously the two shift amounts were
+; swapped while matching, so the pass rewrote (ashr (shl V, 8), 16) -- a
+; right shift -- into a left shift, and skipped the valid case.
+
+; A = 16 = N/2, B = 8: combined.
+define i32 @half_then_less(i32 %v) {
+  %s = shl i32 %v, 16
+  %r = ashr i32 %s, 8, !pc !0
+  ret i32 %r
+}
+
+; A = 8, B = 16 (B > A): not a left shift, unchanged.
+define i32 @more_than_shl(i32 %v) {
+  %s = shl i32 %v, 8
+  %r = ashr i32 %s, 16
+  ret i32 %r
+}
+
+; A = 24 is not half the width: unchanged.
+define i32 @not_half(i32 %v) {
+  %s = shl i32 %v, 24
+  %r = ashr i32 %s, 8
+  ret i32 %r
+}
+
+; A = B: a plain sign extension, left to ConvertMasksToCasts.
+define i32 @equal(i32 %v) {
+  %s = shl i32 %v, 16
+  %r = ashr i32 %s, 16
+  ret i32 %r
+}
+
+; 64-bit: A = 32, B = 4.
+define i64 @wide(i64 %v) {
+  %s = shl i64 %v, 32
+  %r = ashr i64 %s, 4
+  ret i64 %r
+}
+
+!0 = !{i64 4096}
+```
+
+Output (`basic.expected.ll`):
+
+```llvm
+define i32 @half_then_less(i32 %v) {
+  %s = shl i32 %v, 16
+  %1 = trunc i32 %v to i16
+  %2 = sext i16 %1 to i32, !pc !0
+  %3 = shl i32 %2, 8
+  ret i32 %3
+}
+
+define i32 @more_than_shl(i32 %v) {
+  %s = shl i32 %v, 8
+  %r = ashr i32 %s, 16
+  ret i32 %r
+}
+
+define i32 @not_half(i32 %v) {
+  %s = shl i32 %v, 24
+  %r = ashr i32 %s, 8
+  ret i32 %r
+}
+
+define i32 @equal(i32 %v) {
+  %s = shl i32 %v, 16
+  %r = ashr i32 %s, 16
+  ret i32 %r
+}
+
+define i64 @wide(i64 %v) {
+  %s = shl i64 %v, 32
+  %1 = trunc i64 %v to i32
+  %2 = sext i32 %1 to i64
+  %3 = shl i64 %2, 28
+  ret i64 %3
+}
+
+!0 = !{i64 4096}
 ```
 
 #### 13.4.14 `ConvertAddressesToEntityUses`. File `lib/Passes/ConvertAddressesToEntityUses.cpp`
@@ -2925,24 +4118,81 @@ Rewrite, for each kept use:
   Then `use->set(AdaptToType(ir, entity, original value type))`. For an integer operand this gives
   `ptrtoint @entity to iN`. For a pointer operand it is a pointer cast, or the entity directly.
 * If the old value was an instruction, add it to `to_erase`. Afterwards, erase those that are `use_empty()`.
-* The pass returns `none()` whenever the enumeration was non-empty, even if no replacement was made.
+* The pass returns `none()` whenever the enumeration was non-empty, even if no replacement was made (kept).
 
-Example (illustrative; the test only runs the pass on `TestingUnresolvedEntity.ll` and dumps the result). Suppose
-the resolver maps 0x12bd8 to `@data_12bd8`:
+Real IR: `tests/golden/passes/ConvertAddressesToEntityUses/basic.ll`, run as `anvill-opt --passes=ConvertAddressesToEntityUses`. Input:
 
 ```llvm
-; before
-%41 = add i32 %40, add (i32 ptrtoint (ptr @__anvill_pc to i32), i32 76696)
-%p  = inttoptr i64 add (i64 ptrtoint (ptr @__anvill_pc to i64), i64 77784) to ptr
-%v  = load i32, ptr %p
-; after
-%p'  ; the inttoptr operand use becomes ptrtoint @data_12fd8 ... the load's pointer use becomes @data_12fd8 directly
-%v  = load i32, ptr @data_12fd8
-; and @data_12fd8 gets !pc !{i64 77784}  (if pc_metadata_id)
+; Values that resolve to the address of a lifted entity (here, globals named
+; sub_/var_/data_<hex>, see anvill-opt) through @__anvill_pc-relative
+; arithmetic are replaced by references to the entity; the entity gets the
+; `pc` metadata of its address. Addresses that are not entities stay as
+; they are; stack-pointer and return-address values are never converted.
+; NOTE: anvill-opt's resolver only knows exact entity addresses, so the
+; interior address below is not converted here; the lifter's resolver maps
+; interior addresses to GEPs into the containing variable.
+
+@__anvill_pc = external global i8
+@__anvill_sp = external global i8
+@var_404000_I = global i32 7
+@var_404010_L = global i64 0
+declare i32 @sub_402000__AII_B_0(i32)
+
+define i32 @f(i32 %x) {
+  ; Load of a global through its PC-relative address.
+  %v = load i32, ptr inttoptr (i64 add (i64 ptrtoint (ptr @__anvill_pc to i64), i64 4210688) to ptr)
+  ; Interior address of a global (offset 4 into var_404010_L).
+  %p = inttoptr i64 add (i64 ptrtoint (ptr @__anvill_pc to i64), i64 4210708) to ptr
+  store i32 %x, ptr %p
+  ; A function address used as an integer.
+  %fp = add i64 ptrtoint (ptr @__anvill_pc to i64), 4202496
+  %fptr = inttoptr i64 %fp to ptr
+  %r = call i32 %fptr(i32 %v)
+  ; Not an entity, and a stack address.
+  %unknown = load i32, ptr inttoptr (i64 add (i64 ptrtoint (ptr @__anvill_pc to i64), i64 4227072) to ptr)
+  %stack = load i32, ptr inttoptr (i64 add (i64 ptrtoint (ptr @__anvill_sp to i64), i64 -8) to ptr)
+  %s0 = add i32 %r, %unknown
+  %s = add i32 %s0, %stack
+  ret i32 %s
+}
 ```
 
-The `%41` operand is a PC-tainted constant 0x12b98. It is replaced only if some entity exists at that address.
-The test "Regression test for unresolved anvill_pc" checks that the pass does not crash when no entity exists.
+Output (`basic.expected.ll`):
+
+```llvm
+@__anvill_pc = external global i8
+@__anvill_sp = external global i8
+@var_404000_I = global i32 7, !pc !0
+@var_404010_L = global i64 0
+
+declare !pc !1 i32 @sub_402000__AII_B_0(i32)
+
+define i32 @f(i32 %x) {
+  %v = load i32, ptr @var_404000_I, align 4
+  %p = inttoptr i64 add (i64 ptrtoint (ptr @__anvill_pc to i64), i64 4210708) to ptr
+  store i32 %x, ptr %p, align 4
+  %r = call i32 @sub_402000__AII_B_0(i32 %v)
+  %unknown = load i32, ptr inttoptr (i64 add (i64 ptrtoint (ptr @__anvill_pc to i64), i64 4227072) to ptr), align 4
+  %stack = load i32, ptr inttoptr (i64 add (i64 ptrtoint (ptr @__anvill_sp to i64), i64 -8) to ptr), align 4
+  %s0 = add i32 %r, %unknown
+  %s = add i32 %s0, %stack
+  ret i32 %s
+}
+
+!0 = !{i64 4210688}
+!1 = !{i64 4202496}
+```
+
+More cases in `tests/golden/passes/ConvertAddressesToEntityUses/`: `edge_cases.ll`.
+
+In `basic.ll`, `anvill-opt`'s resolver knows only exact entity addresses (globals named `sub_/var_/data_<hex>`),
+so the interior address `0x404014` is not converted; the lifter's resolver (`EntityCrossReferenceResolver`)
+maps interior addresses of variables to GEPs into the containing variable (§11). `edge_cases.ll` covers PHI
+incoming values (the replacement goes into the predecessor), instruction-computed addresses (replaced values
+that become unused are erased, but not their operands), integer uses (`ptrtoint @entity`), addresses computed
+from another global, plain integer constants (not PC-related, so left alone) and `--pc_metadata=` (no `pc`
+annotations). The unit test "Regression test for unresolved anvill_pc" checks that the pass does not crash when
+no entity exists.
 
 Interaction: this runs after stack recovery, so SP-related values are excluded. The final step of
 `OptimizeModule` replaces the remaining `__anvill_pc` uses with null when `should_remove_anvill_pc`.
@@ -2990,18 +4240,73 @@ Otherwise it returns `kUnclassifiableProgramCounter`.
 * If anything changed, run a **private nested FunctionPassManager** `DCE, SROA, SimplifyCFG, InstCombine` on `F`
   with the same FAM. Return `none()` if anything changed, else `all()`.
 
-Example, from `data/TransformRemillJumpDataARM32_0.ll`:
+Real IR: `tests/golden/passes/TransformRemillJumpIntrinsics/basic.ll`, run as `anvill-opt --passes=TransformRemillJumpIntrinsics`. Input:
 
 ```llvm
-; before
-%109 = call ptr @__remill_jump(ptr %21, i32 or (i32 or (i32 or (i32 shl (i32 zext (i8 trunc (i32 lshr
-        (i32 ptrtoint (ptr @__anvill_ra to i32), i32 24) to i8) to i32), i32 24), ...),
-        i32 zext (i8 ptrtoint (ptr @__anvill_ra to i8) to i32)), ptr null)
-; after
-%109 = call ptr @__remill_function_return(ptr undef, i32 or (... same CE ...), ptr null)
+; An indirect jump (__remill_jump) whose target is the return address is a
+; return: the call is redirected to __remill_function_return (with an undef
+; state pointer), and the function is cleaned up with DCE, SROA, SimplifyCFG
+; and InstCombine. The return address is recognized directly
+; (ptrtoint @__anvill_ra), or through arbitrary arithmetic that still
+; evaluates to the magic return address value 0x4141414141414141 (e.g. a
+; byte-by-byte reassembly). Other targets are left alone.
+
+@__anvill_ra = external global i8
+
+declare ptr @__remill_jump(ptr, i64, ptr)
+
+define ptr @direct(ptr %state, ptr %mem) {
+  %m = call ptr @__remill_jump(ptr %state, i64 ptrtoint (ptr @__anvill_ra to i64), ptr %mem), !pc !0
+  ret ptr %m
+}
+
+define ptr @reassembled(ptr %state, ptr %mem) {
+  %ra = ptrtoint ptr @__anvill_ra to i64
+  %hi = lshr i64 %ra, 32
+  %lo = and i64 %ra, 4294967295
+  %hi2 = shl i64 %hi, 32
+  %back = or i64 %hi2, %lo
+  %m = call ptr @__remill_jump(ptr %state, i64 %back, ptr %mem)
+  ret ptr %m
+}
+
+define ptr @unknown_target(ptr %state, ptr %mem, i64 %target) {
+  %m = call ptr @__remill_jump(ptr %state, i64 %target, ptr %mem)
+  ret ptr %m
+}
+
+!0 = !{i64 4096}
 ```
 
-The test asserts that `__remill_function_return` exists and has uses, and that `__remill_jump` is absent or has no uses.
+Output (`basic.expected.ll`):
+
+```llvm
+@__anvill_ra = external global i8
+
+declare ptr @__remill_jump(ptr, i64, ptr)
+
+define ptr @direct(ptr %state, ptr %mem) {
+  %m = call ptr @__remill_function_return(ptr undef, i64 ptrtoint (ptr @__anvill_ra to i64), ptr %mem), !pc !0
+  ret ptr %m
+}
+
+define ptr @reassembled(ptr %state, ptr %mem) {
+  %m = call ptr @__remill_function_return(ptr undef, i64 ptrtoint (ptr @__anvill_ra to i64), ptr %mem)
+  ret ptr %m
+}
+
+define ptr @unknown_target(ptr %state, ptr %mem, i64 %target) {
+  %m = call ptr @__remill_jump(ptr %state, i64 %target, ptr %mem)
+  ret ptr %m
+}
+
+declare ptr @__remill_function_return(ptr, i64, ptr) #0
+
+!0 = !{i64 4096}
+```
+
+The unit test (on `data/TransformRemillJumpDataARM32_0.ll`) asserts that `__remill_function_return` exists and has
+uses, and that `__remill_jump` is absent or has no uses.
 
 Interaction: this must run before RemoveRemillFunctionReturns, which then removes the call.
 
@@ -3041,29 +4346,78 @@ The `sp_resolver` parameter is passed but unused; the free function `IsRelatedTo
     (arg2); erase it. Metadata is copied onto each created value.
 * Return `none()` if anything changed.
 
-Examples (illustrative):
+Real IR: `tests/golden/passes/RemoveRemillFunctionReturns/basic.ll`, run as `anvill-opt --passes=RemoveRemillFunctionReturns`. Input:
 
 ```llvm
-; match case
-%ra = call ptr @llvm.returnaddress(i32 0)
-%pc = ptrtoint ptr %ra to i64
-%m  = call ptr @__remill_function_return(ptr undef, i64 %pc, ptr %mem)
-ret ptr %m
-; after
-ret ptr %mem            ; %pc and %ra erased
+; Returns to the real return address are removed: the
+; __remill_function_return call is replaced by its memory pointer and the
+; return-address computation is erased. A return to a value loaded from the
+; stack (not yet resolved by stack recovery) is left alone. A return to any
+; other value means the function changed its return address: the value is
+; stored into the return address slot (llvm.addressofreturnaddress) and the
+; call is removed.
 
-; fixup case (x86-64): the return address was loaded from an arbitrary location
-%t = load i64, ptr %slot
-%m = call ptr @__remill_function_return(ptr undef, i64 %t, ptr %mem)
-; after
-%aora = call ptr @llvm.addressofreturnaddress.p0()       ; entry block
-...
-store i64 %t, ptr %aora
-; uses of %m -> %mem
+@__anvill_ra = external global i8
+@__anvill_sp = external global i8
+
+declare ptr @__remill_function_return(ptr, i64, ptr)
+declare i64 @__remill_read_memory_64(ptr, i64)
+
+define ptr @returns_normally(ptr %mem) {
+  %m = call ptr @__remill_function_return(ptr undef, i64 ptrtoint (ptr @__anvill_ra to i64), ptr %mem), !pc !0
+  ret ptr %m
+}
+
+define ptr @returns_to_stack_value(ptr %mem) {
+  %ra = call i64 @__remill_read_memory_64(ptr %mem, i64 ptrtoint (ptr @__anvill_sp to i64))
+  %m = call ptr @__remill_function_return(ptr undef, i64 %ra, ptr %mem)
+  ret ptr %m
+}
+
+define ptr @returns_elsewhere(ptr %mem, i64 %target) {
+  %m = call ptr @__remill_function_return(ptr undef, i64 %target, ptr %mem), !pc !1
+  ret ptr %m
+}
+
+!0 = !{i64 4096}
+!1 = !{i64 8192}
 ```
 
-Case 3 of `RecoverStackFrameInformation.ll` is `%11 = load i32, ptr inttoptr(sp+...)` passed to `__remill_function_return`.
-Before stack recovery it is classified as `kFoundSymbolicStackPointerLoad` and left alone.
+Output (`basic.expected.ll`):
+
+```llvm
+@__anvill_ra = external global i8
+@__anvill_sp = external global i8
+
+declare ptr @__remill_function_return(ptr, i64, ptr)
+
+declare i64 @__remill_read_memory_64(ptr, i64)
+
+define ptr @returns_normally(ptr %mem) {
+  ret ptr %mem
+}
+
+define ptr @returns_to_stack_value(ptr %mem) {
+  %ra = call i64 @__remill_read_memory_64(ptr %mem, i64 ptrtoint (ptr @__anvill_sp to i64))
+  %m = call ptr @__remill_function_return(ptr undef, i64 %ra, ptr %mem)
+  ret ptr %m
+}
+
+define ptr @returns_elsewhere(ptr %mem, i64 %target) {
+  %1 = call ptr @llvm.addressofreturnaddress.p0(), !pc !0
+  store i64 %target, ptr %1, align 8, !pc !0
+  ret ptr %mem
+}
+
+declare ptr @llvm.addressofreturnaddress.p0() #0
+
+!0 = !{i64 8192}
+```
+
+The golden case has one function per classification: a return to `ptrtoint @__anvill_ra` (folded away), a
+return to a value loaded from the stack before stack recovery (`kFoundSymbolicStackPointerLoad`, left alone; this
+is also case 3 of the unit-test data `RecoverStackFrameInformation.ll`) and a return to an unrelated value
+(stored through `llvm.addressofreturnaddress`).
 
 #### 13.4.19 `ConvertSymbolicReturnAddressToConcreteReturnAddress`. File `lib/Passes/ConvertSymbolicReturnAddressToConcreteReturnAddress.cpp`
 
@@ -3082,26 +4436,76 @@ Algorithm:
      Copy the metadata of `inst` onto it, then `use->set(...)`.
    * `ce` is `bitcast @__anvill_ra`:
      * same type: `use->set(ra)`;
-     * pointer type: create a bitcast after `ra`. **Gotcha: the code never calls `use->set` here**, so the use
-       keeps the CE;
+     * pointer type: create a bitcast after `ra` and `use->set` it. (**Fixed:** the code never called `use->set`
+       here, so the use kept the CE.)
      * integer type: ptrtoint as above.
    * Any other CE: `ce_inst = ce->getAsInstruction()`, inserted before `ce_insert_loc`, then
      `ce_insert_loc = ce_inst` (nested CEs stack upward). Copy metadata from `inst` and `use->set(ce_inst)`.
      Scan `ce_inst`'s operands for further RA-referencing CEs and append them to the list.
 5. Return `none()`.
 
-Example (illustrative):
+Real IR: `tests/golden/passes/ConvertSymbolicReturnAddressToConcreteReturnAddress/basic.ll`, run as `anvill-opt --passes=ConvertSymbolicReturnAddressToConcreteReturnAddress`. Input:
 
 ```llvm
-; before
-store i64 add (i64 ptrtoint (ptr @__anvill_ra to i64), i64 0), ptr %slot
-; after
+; Remaining uses of the symbolic return address (`ptrtoint @__anvill_ra`,
+; possibly inside larger constant expressions) are replaced by the real
+; return address: one `llvm.returnaddress(0)` call at the top of the entry
+; block, `ptrtoint`s of it, and the enclosing constant expressions turned
+; into instructions. Functions without such uses are unchanged.
+
+@__anvill_ra = external global i64
+
+define void @stores_ra(ptr %slot) {
+entry:
+  store i64 ptrtoint (ptr @__anvill_ra to i64), ptr %slot, !pc !0
+  ret void
+}
+
+define i64 @adjusted_ra() {
+entry:
+  br label %next
+next:
+  ret i64 add (i64 ptrtoint (ptr @__anvill_ra to i64), i64 8)
+}
+
+define i64 @no_ra(i64 %x) {
+  ret i64 %x
+}
+
+!0 = !{i64 4096}
+```
+
+Output (`basic.expected.ll`):
+
+```llvm
+@__anvill_ra = external global i64
+
+define void @stores_ra(ptr %slot) {
 entry:
   %return_address = call ptr @llvm.returnaddress(i32 0)
-  %1 = ptrtoint ptr %return_address to i64
-  %2 = add i64 %1, 0
-  ...
-  store i64 %2, ptr %slot
+  %0 = ptrtoint ptr %return_address to i64, !pc !0
+  store i64 %0, ptr %slot, align 8, !pc !0
+  ret void
+}
+
+define i64 @adjusted_ra() {
+entry:
+  %return_address = call ptr @llvm.returnaddress(i32 0)
+  %0 = ptrtoint ptr %return_address to i64
+  %1 = add i64 %0, 8
+  br label %next
+
+next:                                             ; preds = %entry
+  ret i64 %1
+}
+
+define i64 @no_ra(i64 %x) {
+  ret i64 %x
+}
+
+declare ptr @llvm.returnaddress(i32 immarg) #0
+
+!0 = !{i64 4096}
 ```
 
 #### 13.4.20 `LowerRemillUndefinedIntrinsics`. File `lib/Passes/LowerRemillUndefinedIntrinsics.cpp`
@@ -3110,8 +4514,43 @@ Kind: function pass. Every CallInst whose direct callee name starts with `__remi
 `UndefValue::get(call type)` and erased. `CopyMetadataTo` onto the undef is a no-op. This should run late, to
 keep undefinedness from spreading.
 
+Real IR: `tests/golden/passes/LowerRemillUndefinedIntrinsics/basic.ll`, run as `anvill-opt --passes=LowerRemillUndefinedIntrinsics`. Input:
+
 ```llvm
-%u = call i8 @__remill_undefined_8()   ->   uses of %u become i8 undef
+; Calls to __remill_undefined_* are replaced by undef values of their type.
+
+declare i8 @__remill_undefined_8()
+declare i32 @__remill_undefined_32()
+declare double @__remill_undefined_f64()
+
+define i32 @f(i32 %x) {
+  %flag = call i8 @__remill_undefined_8()
+  %bits = call i32 @__remill_undefined_32()
+  %fp = call double @__remill_undefined_f64()
+  %z = zext i8 %flag to i32
+  %r = or i32 %z, %bits
+  %fpi = fptosi double %fp to i32
+  %s = add i32 %r, %fpi
+  ret i32 %s
+}
+```
+
+Output (`basic.expected.ll`):
+
+```llvm
+declare i8 @__remill_undefined_8()
+
+declare i32 @__remill_undefined_32()
+
+declare double @__remill_undefined_f64()
+
+define i32 @f(i32 %x) {
+  %z = zext i8 undef to i32
+  %r = or i32 %z, undef
+  %fpi = fptosi double undef to i32
+  %s = add i32 %r, %fpi
+  ret i32 %s
+}
 ```
 
 #### 13.4.21 `RemoveUnusedBranchHints`
@@ -3137,20 +4576,52 @@ Algorithm (`md_id = getMDKindID(name)`), per basic block:
    The effect: unannotated instructions take the PC of the next annotated instruction below them. Trailing
    unannotated instructions take the last annotated PC in the block. Blocks with no annotations stay unannotated.
 
-Example (illustrative, `pc_metadata_name = "pc"`):
+Real IR: `tests/golden/passes/SpreadPCMetadata/basic.ll`, run as `anvill-opt --passes=SpreadPCMetadata`. Input:
 
 ```llvm
-; before
-%a = add i64 %x, 1
-%b = load i64, ptr %p, !pc !1
-%c = icmp eq i64 %b, %a
-br i1 %c, label %t, label %f, !pc !2
-; after
-%a = add i64 %x, 1                ; still unannotated by the forward pass (not used by an annotated insn) ...
-%b = load i64, ptr %p, !pc !1
-%c = icmp eq i64 %b, %a, !pc !2   ; forward pass: operand of the annotated br
-br ..., !pc !2
-; backward pass then gives %a !pc !1 (from %b below it)
+; Instructions without `pc` metadata get one: first, an annotated
+; instruction gives its metadata to unannotated operands defined in the same
+; block; then, walking each block backwards starting with the block's last
+; metadata, unannotated instructions take the metadata of the next annotated
+; instruction after them (so instructions after the last annotated one take
+; its metadata). Blocks without any annotated instruction are unchanged.
+
+define i32 @f(i32 %a, i32 %b) {
+entry:
+  %x = add i32 %a, 1
+  %y = mul i32 %x, %b, !pc !0
+  %z = sub i32 %y, 3
+  %w = xor i32 %z, %a, !pc !1
+  %tail = add i32 %w, 1
+  br label %next
+next:
+  %n = add i32 %tail, %x
+  ret i32 %n
+}
+
+!0 = !{i64 4096}
+!1 = !{i64 4100}
+```
+
+Output (`basic.expected.ll`):
+
+```llvm
+define i32 @f(i32 %a, i32 %b) {
+entry:
+  %x = add i32 %a, 1, !pc !0
+  %y = mul i32 %x, %b, !pc !0
+  %z = sub i32 %y, 3, !pc !1
+  %w = xor i32 %z, %a, !pc !1
+  %tail = add i32 %w, 1, !pc !1
+  br label %next, !pc !1
+
+next:                                             ; preds = %entry
+  %n = add i32 %tail, %x
+  ret i32 %n
+}
+
+!0 = !{i64 4096}
+!1 = !{i64 4100}
 ```
 
 #### 13.4.23 `CodeQualityStatCollector`. File `lib/Passes/CodeQualityStatCollector.cpp`
@@ -3205,41 +4676,105 @@ Phase 2, `xors` (`%x = xor i1 %c, true` with `%c = icmp P a, b`):
 Correctness: the xor users get `!c == n`, as they should. Branches and selects on `%c` now see `n = !c`, so they
 are swapped back.
 
-**Gotcha (real bug):** `brs_to_invert.clear()` and `selects_to_invert.clear()` are executed **inside the loop over
-`%c`'s users, once per user**. After the loop, only the *last* visited non-xor user is retained. LLVM use-list
-iteration is roughly most-recent-first, so this is the first user in program order. Any other branch or select users
-receive the negated condition **without** being swapped, which inverts their semantics.
+**Fixed (was a real bug).** `brs_to_invert.clear()` and `selects_to_invert.clear()` used to run **inside the loop
+over `%c`'s users, once per user**, so only the *last* visited non-xor user was kept; other branch or select users
+received the negated condition **without** being swapped, which inverted their semantics. The vectors also lived
+outside the per-xor loop, so when `%c`'s only user was the xor they still held the *previous* xor's branches and
+selects, which were then swapped again. The vectors are now cleared once per xor, before the loop, and a select
+user only counts when `%c` is its condition (not one of its values). The unit test `xor_conversion.ll` only counts
+xors and did not detect this; the golden `compare.ll` has a compare used by an xor, two branches and a select.
 
-In addition, the two vectors live outside the per-xor loop. If `%c`'s only user is the xor, the loop body never
-runs and the vectors keep the *previous* xor's branches and selects, which then get swapped again.
-
-The `xor_conversion.ll` test (`%6` used by xor, select and br) only counts xors, so it does not detect this.
-A faithful-but-correct reimplementation should clear the vectors once per xor, before the loop.
-
-Examples, from the test data:
+Real IR: `tests/golden/passes/ConvertXorsToCmps/compare.ll`, run as `anvill-opt --passes=ConvertXorsToCmps`. Input:
 
 ```llvm
-; xor_removal.ll  (non-cmp case)
-%10 = trunc i8 %9 to i1
-%11 = xor i1 %10, true
-br i1 %11, label %a17, label %a19
-; after
-br i1 %10, label %a19, label %a17        ; %11 erased
+; (xor (icmp P a, b), true) becomes (icmp !P a, b) when every other user of
+; the compare is a branch or a select condition: those branches get their
+; successors swapped and those selects their values swapped, so they keep
+; their meaning. Previously only the *last* such user was swapped (the list
+; was cleared per use), silently inverting the others.
 
-; xor_conversion.ll (cmp case)
-%6 = icmp eq i8 %5, 0
-%7 = xor i1 %6, true
-%8 = zext i1 %7 to i8
-%10 = select i1 %6, ptr @.str.1, ptr @.str
-br i1 %6, label %18, label %12
-; after (intended)
-%n = icmp ne i8 %5, 0
-%8 = zext i1 %n to i8
-%10 = select i1 %n, ptr @.str, ptr @.str.1
-br i1 %n, label %12, label %18
+define i32 @only_xor(i32 %a, i32 %b) {
+  %c = icmp slt i32 %a, %b
+  %x = xor i1 %c, true, !pc !0
+  %r = select i1 %x, i32 1, i32 2
+  ret i32 %r
+}
+
+define i32 @two_branches(i32 %a, i32 %b, ptr %p) {
+entry:
+  %c = icmp ult i32 %a, %b
+  %x = xor i1 true, %c
+  store i1 %x, ptr %p
+  br i1 %c, label %t1, label %f1
+t1:
+  br label %mid
+f1:
+  br label %mid
+mid:
+  %v = phi i32 [ 1, %t1 ], [ 2, %f1 ]
+  br i1 %c, label %t2, label %f2
+t2:
+  ret i32 %v
+f2:
+  ret i32 0
+}
+
+define i32 @select_condition(i32 %a, i32 %b) {
+  %c = icmp eq i32 %a, %b
+  %x = xor i1 %c, true
+  %s = select i1 %c, i32 %a, i32 %b
+  %t = select i1 %x, i32 10, i32 %s
+  ret i32 %t
+}
+
+!0 = !{i64 4096}
 ```
 
-Non-changes:
+Output (`compare.expected.ll`):
+
+```llvm
+define i32 @only_xor(i32 %a, i32 %b) {
+  %1 = icmp sge i32 %a, %b, !pc !0
+  %r = select i1 %1, i32 1, i32 2
+  ret i32 %r
+}
+
+define i32 @two_branches(i32 %a, i32 %b, ptr %p) {
+entry:
+  %0 = icmp uge i32 %a, %b
+  store i1 %0, ptr %p, align 1
+  br i1 %0, label %f1, label %t1
+
+t1:                                               ; preds = %entry
+  br label %mid
+
+f1:                                               ; preds = %entry
+  br label %mid
+
+mid:                                              ; preds = %f1, %t1
+  %v = phi i32 [ 1, %t1 ], [ 2, %f1 ]
+  br i1 %0, label %f2, label %t2
+
+t2:                                               ; preds = %mid
+  ret i32 %v
+
+f2:                                               ; preds = %mid
+  ret i32 0
+}
+
+define i32 @select_condition(i32 %a, i32 %b) {
+  %1 = icmp ne i32 %a, %b
+  %s = select i1 %1, i32 %b, i32 %a
+  %t = select i1 %1, i32 10, i32 %s
+  ret i32 %t
+}
+
+!0 = !{i64 4096}
+```
+
+More cases in `tests/golden/passes/ConvertXorsToCmps/`: `non_compare.ll`, `not_invertible.ll`.
+
+Non-changes (golden `not_invertible.ll` and `non_compare.ll`; unit-test data named below):
 
 * `xor_conversion_nochange.ll`: `%6` also has `zext` users, so it is not invertible.
 * `xor_removal_noremove.ll`, case `xor i1 %10, false`: wrong constant.
@@ -3250,7 +4785,7 @@ Non-changes:
 
 * **HoistUsersOfSelectsAndPhis**. The call is commented out in Optimize.cpp: "has an issue on `SMIME_write_ASN1`
   of the ARM64 Challenge 5". See §13.5.
-* **SimplifyStackArithFlags**. Not built. See §13.2.6.
+* **SimplifyStackArithFlags**. Removed (it was never built). See §13.2.6.
 * **`OurVerifierPass`** in Optimize.cpp. A debugging helper wrapping `llvm::VerifierPass`; unused.
 
 
@@ -3280,8 +4815,8 @@ Each folder has signature
   * The "other" operand must be a `Constant`.
   * At U, build `nt = op(t, other)`, `nf = op(f, other)` and `select cond, nt, nf`, copying metadata (U → nt/nf,
     S → the new select).
-  * **Gotcha:** the selected value is always placed as the LHS, so a non-commutative `sub C, %sel` becomes
-    `select(c, t - C, f - C)`, which is wrong.
+  * The operand order is preserved: `sub C, %sel` becomes `select(c, C - t, C - f)`. (**Fixed:** the selected
+    value used to be placed as the LHS, giving `select(c, t - C, f - C)`.)
 * **Casts** (`Trunc, ZExt, SExt, FPToUI, FPToSI, UIToFP, SIToFP, FPTrunc, FPExt, PtrToInt, IntToPtr, BitCast`)
   use `FoldSelectWithCastInst`:
   * For a vector condition, require an `i1` element and an element count equal to the destination vector's.
@@ -3289,8 +4824,9 @@ Each folder has signature
 * **GetElementPtr** uses `FoldSelectWithGEPInst`:
   * `CollectAndValidateGEPIndexes(index_list, S, gep)` (shared with PHIs): indices before the select or PHI index
     must not be instructions in the GEP's block; indices after it must be constants.
-  * The select must be one of the **indices**. If it is the base pointer, `new_true_value` stays null and the fold
-    fails.
+  * If the select is the **base pointer** (and not also an index), build `gep t, indices` and `gep f, indices` at
+    the GEP, then a select. (**Fixed:** the fold used to fail in that case.) Otherwise the select must be one of
+    the indices. In both cases the new GEPs keep the old GEP's `inbounds` flag (previously dropped).
   * Build `gep base, [.., t, ..]`, the same with `f`, then a select.
 * Each successful replacement is recorded `(U → newSelect)` and its result pushed to `out`. Finally RAUW and erase
   each U. The select itself is left for the driver's cleanup.
@@ -3315,8 +4851,8 @@ original `(value_i, block_i)` it adds `map[(value_i, block_i)]`. It uses `CHECK_
 The per-user PHI folders:
 
 * **FoldPHINodeWithBinaryOp**: the other operand must be a Constant. For each incoming value, build
-  `op(iv, C)` in `InsertionBlock(iv)`, then `BuildPHI(P, P type)`. It has the same operand-order gotcha as the
-  select version.
+  `op(iv, C)` (or `op(C, iv)` when the PHI is the right operand) in `InsertionBlock(iv)`, then
+  `BuildPHI(P, P type)`. Like the select version, it now preserves the operand order (`phi.ll`).
 * **FoldPHINodeWithCastInst**: build `cast(iv)` per incoming value, then `BuildPHI(P, dest type)`.
 * **FoldPHINodeWithGEPInst**:
   * `CollectAndValidateGEPIndexes` must succeed, and the GEP must be in **the same block as P**.
@@ -3329,31 +4865,103 @@ The per-user PHI folders:
   * Per incoming value: `gep srcTy, value_map[base][bb], mapped indices`, inserted in `InsertionBlock`.
     Then `BuildPHI(P, gep type)`.
 
-Examples (from `InstructionFolderPass.ll` and the header comment):
+Real IR: `tests/golden/passes/HoistUsersOfSelectsAndPhis/select.ll`, run as `anvill-opt --passes=HoistUsersOfSelectsAndPhis`. Input:
 
 ```llvm
-; CombineAddWithSelect
-%1 = select i1 %0, i64 11, i64 22
-%2 = add i64 add (i64 ptrtoint (ptr @__anvill_pc to i64), i64 100), %1
-; after
-%a = add i64 11, add (...pc..., 100)      ; (operand order: selected value first)
-%b = add i64 22, add (...pc..., 100)
-%2 = select i1 %0, i64 %a, i64 %b
+; A binary operator with a constant other operand, a cast, or a GEP that uses
+; a select is pushed into both arms of the select:
+;   (op (select c, a, b), K) -> (select c, (op a, K), (op b, K))
+; The operand order is preserved: (sub K, select) becomes
+; (select c, (sub K, a), (sub K, b)). Previously the select was always put
+; on the left, turning `sub 100, x` into `sub x, 100`.
+; (Not scheduled by OptimizeModule.)
 
-; CombineAddWithPHI
-first:  %3 = add i32 %1, 1            br label %exit
-second: %4 = add i32 %1, 2            br label %exit
-exit:   %5 = phi i32 [ %3, %first ], [ %4, %second ]
-        %6 = add i32 add (i32 ptrtoint (ptr @__anvill_pc to i32), i32 100), %5
-; after
-first:  %3 = add i32 %1, 1 ; %x = add i32 %3, <pc+100>  ; br
-second: %4 = add i32 %1, 2 ; %y = add i32 %4, <pc+100>  ; br
-exit:   %6 = phi i32 [ %x, %first ], [ %y, %second ]
+define i32 @select_lhs(i1 %c, i32 %a, i32 %b) {
+  %s = select i1 %c, i32 %a, i32 %b
+  %r = sub i32 %s, 100
+  ret i32 %r
+}
+
+define i32 @select_rhs(i1 %c, i32 %a, i32 %b) {
+  %s = select i1 %c, i32 %a, i32 %b
+  %r = sub i32 100, %s
+  ret i32 %r
+}
+
+define i32 @not_constant(i1 %c, i32 %a, i32 %b, i32 %k) {
+  %s = select i1 %c, i32 %a, i32 %b
+  %r = sub i32 %s, %k
+  ret i32 %r
+}
+
+define i64 @cast(i1 %c, i32 %a, i32 %b) {
+  %s = select i1 %c, i32 %a, i32 %b
+  %r = zext i32 %s to i64
+  ret i64 %r
+}
+
+define ptr @gep_index(i1 %c, ptr %p) {
+  %s = select i1 %c, i64 1, i64 3
+  %g = getelementptr inbounds [4 x i32], ptr %p, i64 0, i64 %s
+  ret ptr %g
+}
+
+define ptr @gep_base(i1 %c, ptr %p, ptr %q) {
+  %s = select i1 %c, ptr %p, ptr %q
+  %g = getelementptr inbounds i32, ptr %s, i64 2
+  ret ptr %g
+}
 ```
 
-`CombineGEPWithSelect` in the data has the select as the GEP *base*, so it is not folded.
+Output (`select.expected.ll`):
 
-The only test is `InstructionFolderPass.cpp`: run the pass, then verify the module.
+```llvm
+define i32 @select_lhs(i1 %c, i32 %a, i32 %b) {
+  %1 = sub i32 %a, 100
+  %2 = sub i32 %b, 100
+  %3 = select i1 %c, i32 %1, i32 %2
+  ret i32 %3
+}
+
+define i32 @select_rhs(i1 %c, i32 %a, i32 %b) {
+  %1 = sub i32 100, %a
+  %2 = sub i32 100, %b
+  %3 = select i1 %c, i32 %1, i32 %2
+  ret i32 %3
+}
+
+define i32 @not_constant(i1 %c, i32 %a, i32 %b, i32 %k) {
+  %s = select i1 %c, i32 %a, i32 %b
+  %r = sub i32 %s, %k
+  ret i32 %r
+}
+
+define i64 @cast(i1 %c, i32 %a, i32 %b) {
+  %1 = zext i32 %a to i64
+  %2 = zext i32 %b to i64
+  %3 = select i1 %c, i64 %1, i64 %2
+  ret i64 %3
+}
+
+define ptr @gep_index(i1 %c, ptr %p) {
+  %1 = getelementptr inbounds [4 x i32], ptr %p, i64 0, i64 1
+  %2 = getelementptr inbounds [4 x i32], ptr %p, i64 0, i64 3
+  %3 = select i1 %c, ptr %1, ptr %2
+  ret ptr %3
+}
+
+define ptr @gep_base(i1 %c, ptr %p, ptr %q) {
+  %1 = getelementptr inbounds i32, ptr %p, i64 2
+  %2 = getelementptr inbounds i32, ptr %q, i64 2
+  %3 = select i1 %c, ptr %1, ptr %2
+  ret ptr %3
+}
+```
+
+More cases in `tests/golden/passes/HoistUsersOfSelectsAndPhis/`: `phi.ll`.
+
+`CombineGEPWithSelect` in the unit-test data `InstructionFolderPass.ll` has the select as the GEP *base*; it is
+now folded. That unit test only runs the pass and verifies the module; the goldens pin the output.
 
 
 ### 13.6 Exact pipeline (`lib/Optimize.cpp`, `void OptimizeModule(const EntityLifter &lifter, llvm::Module &module)`)
@@ -3441,6 +5049,16 @@ Then `mpm.addPass(createModuleToFunctionPassAdaptor(std::move(second_fpm)))` and
 GlobalOpt → GlobalDCE → StripDeadDebugInfo → **the entire first FPM again** → the second FPM. The effective
 sequence is: [M1 + FPM1] then [M1 + FPM1 + FPM2]. The first FPM runs twice in total, and the second FPM runs once.
 
+This looks accidental, but it is **kept deliberately** (and now documented in a comment in `lib/Optimize.cpp`):
+running FPM1 only once was tried and made the output worse. The second round removes the stack frames left
+around calls and the dead blocks left by switch lowering, as the `tests/golden/lifter/**/*.optimized.ll` files
+show. A reimplementation that wants the same output must run FPM1 twice.
+
+Since the remill-template image's LLVM has assertions enabled, the `instcombine` that `anvill-opt` builds from a
+pipeline string is `instcombine<no-verify-fixpoint>`: the default verifies that InstCombine reaches a fixpoint in
+one iteration and aborts otherwise. `OptimizeModule` constructs `InstCombinePass()` directly; under assertions
+that also verifies the fixpoint, which the lifter goldens show is reached.
+
 Post-steps:
 
 * If `lifter.Options().should_remove_anvill_pc`, call
@@ -3515,25 +5133,29 @@ The suites that need analyses (switch lowering, branch recovery, RemoveStackPoin
 `PassBuilder` with all four managers and `crossRegisterProxies`. They clear the managers at the end, mirroring Optimize.cpp.
 
 
-### 13.8 Quick gotcha list (to replicate or fix deliberately)
+### 13.8 Quick gotcha list, with status
 
+The status column says what this branch did. "Fixed" items have a golden case that pins the new behaviour; the
+old behaviour is described in the section referenced.
 
-1. The pipeline runs the first FPM twice, because `mpm` is reused (§13.6).
-2. `ConvertXorsToCmps` clears its invert lists per use. This can mis-invert branches or selects (§13.4.24).
-3. `CombineAdjacentShifts` swaps its capture variables, giving the wrong condition and rewrite (§13.4.13).
-4. `ConvertMasksToCasts`: the shl/ashr case does not require amount == width/2, and the shl_add rewrite does not set `changed` (§13.4.8).
-5. `HoistUsersOfSelectsAndPhis`: the binop folder ignores operand order (non-commutative ops break), and select-GEP folding only works when the select is an index (§13.5).
-6. `SplitStackFrameAtReturnAddress`:
-   * the `seen` set is never populated;
-   * the variable-index GEP path uses `ret`, not `sub_ret`, and may violate dominance;
-   * the subframe names look inverted (§13.4.12).
-7. `ConvertSymbolicReturnAddressToConcreteReturnAddress`: the bitcast-to-other-pointer case never sets the use (§13.4.19).
-8. `RemoveStackPointerCExprs`: `Displacement()` returns 0 for i1, so SP comparisons fold to `false` (§13.4.10).
-9. `RemoveUnusedBranchHints` also removes `__remill_compare_exchange*` calls (§13.2.5).
-10. `SliceManager` performs RAUW on uniqued `ptrtoint` CEs, which mutates the original module (§13.3.2).
-11. `LowerSwitchIntrinsics`: no wrap guard on the bound loop; PHIs of removed successors are not updated (§13.3.4).
-12. `SimplifyStackArithFlags` is not compiled; `AddSimplifyStackArithFlags` is declared but undefined (§13.2.6).
-13. `ConvertAddressesToEntityUses` returns `none()` even when nothing was replaced (§13.4.14).
+| # | Behaviour | Status |
+|---|---|---|
+| 1 | The pipeline runs the first FPM twice, because `mpm` is reused (§13.6). | **Kept** deliberately; documented in Optimize.cpp. |
+| 2 | `ConvertXorsToCmps` clears its invert lists per use and can mis-invert branches or selects (§13.4.24). | **Fixed** (`ConvertXorsToCmps/compare.ll`). |
+| 3 | `CombineAdjacentShifts` swaps its capture variables, giving the wrong condition and rewrite (§13.4.13). | **Fixed** (`CombineAdjacentShifts/basic.ll`). |
+| 4 | `ConvertMasksToCasts`: shl/ashr ignores the shift amount; shl_add does not set `changed` (§13.4.8). | **Fixed** (`ConvertMasksToCasts/sign_extend.ll`, `shifted_add.ll`). |
+| 5 | `HoistUsersOfSelectsAndPhis`: binop folding ignores operand order; a select GEP base is not folded; `inbounds` is dropped (§13.5). | **Fixed** (`HoistUsersOfSelectsAndPhis/select.ll`, `phi.ll`). Still unscheduled. |
+| 6 | `SplitStackFrameAtReturnAddress`: `seen` never populated; variable-index GEPs lose the prefix offset, lack a leading zero and may violate dominance; subframe names inverted (§13.4.12). | **Fixed** (`SplitStackFrameAtReturnAddress/*.ll`). |
+| 7 | `ConvertSymbolicReturnAddressToConcreteReturnAddress`: the bitcast-to-pointer case never sets the use (§13.4.19). | **Fixed** (`.../basic.ll`). |
+| 8 | `RemoveStackPointerCExprs`: `Displacement()` returns 0 for i1, so SP comparisons fold to `false` (§13.4.10). | **Fixed** in the folder (§12); `RemoveStackPointerCExprs/*.ll`. |
+| 9 | `RemoveUnusedBranchHints` also removes `__remill_compare_exchange*` calls (§13.2.5). | **Fixed** (`RemoveUnusedBranchHints/basic.ll`). |
+| 10 | `SliceManager` performs RAUW on uniqued CEs, mutating the original module; `@__anvill_pc` slices never become interpretable, so jump tables were never lowered (§13.3.2). | **Fixed** (`LowerSwitchIntrinsics/jump_table.ll`, `lifter/flow/jump_table`). |
+| 11 | `LowerSwitchIntrinsics`: no wrap guard on the bound loop; PHIs not updated (invalid IR) (§13.3.4). | **Fixed** (`LowerSwitchIntrinsics/shared_target.ll`). |
+| 12 | `SimplifyStackArithFlags` is not compiled; `AddSimplifyStackArithFlags` is declared but undefined (§13.2.6). | **Removed.** |
+| 13 | `ConvertAddressesToEntityUses` returns `none()` even when nothing was replaced (§13.4.14). | Kept (harmless: only costs analysis invalidation). |
+| 14 | `RecoverBasicStackFrame`: frame not word-aligned; `__anvill_stack_zero` mixes frame and stack offsets; whole-frame zero/undef store; array length counts slots, not words; initialization ignores the clamp (§13.4.11). | **Fixed** (`RecoverBasicStackFrame/*.ll`). |
+| 15 | `RemoveTrivialPhisAndSelects` does not collapse self-referencing PHIs (`phi [%x, a], [%p, loop]`). | Kept (documented limitation). |
+| 16 | Loads and stores created by lowering use the data layout's ABI alignment, not the access's real alignment. | Kept (documented limitation). |
 
 ---
 
