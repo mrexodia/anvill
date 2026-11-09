@@ -26,6 +26,7 @@ Usage:
 import argparse
 import difflib
 import pathlib
+import re
 import shlex
 import subprocess
 import sys
@@ -47,6 +48,9 @@ def normalize(text):
     # The module ID of anvill-opt outputs is the (machine specific) input path.
     if lines and lines[0].startswith("; ModuleID = "):
         lines = lines[1:]
+    # So is the source file name; keep only the base name.
+    lines = [re.sub(r'^source_filename = ".*/([^/"]*)"', r'source_filename = "\1"',
+                    line) for line in lines]
     return "".join(lines)
 
 
