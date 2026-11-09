@@ -244,7 +244,7 @@ message Specification {
   | 9 | SPARC32 |
   | 10 | SPARC64 |
 
-  0 = unspecified, which is rejected. These map one-to-one to `remill::kArchX86` … `kArchSparc64`. `AARCH64` maps to `kArchAArch64LittleEndian` and `AARCH32` to `kArchAArch32LittleEndian`.
+  0 = unspecified, which is rejected. These map one-to-one to `remill::kArchX86` … `kArchAArch32LittleEndian`. `AARCH64` maps to `kArchAArch64LittleEndian` and `AARCH32` to `kArchAArch32LittleEndian`. **SPARC32 and SPARC64 map to remill's Sleigh-based `kArchSparc32_SLEIGH` and `kArchSparc64_SLEIGH`** (§16.6). (**Fixed:** they mapped to `kArchSparc32`/`kArchSparc64`. In current remill the former's hand-written semantics were removed when SPARC moved to Sleigh, so every instruction lifted as a `kSPARC32EmulateInstruction` hyper call, and the latter has no semantics module at all, so building it aborted.)
 - `OS`: 1 LINUX, 2 MACOS, 3 WINDOWS, 4 SOLARIS. 0 is rejected.
 - `CallingConvention`: the values are **LLVM `CallingConv::ID` numbers**: 0 unspecified/C, 1 CDECL, 64 STDCALL, 65 FASTCALL, 70 THISCALL, 78 AMD64_SYSV, 79 WIN64, 80 VECTORCALL. The value is copied into `llvm::Function::setCallingConv`, except that **CDECL (1) maps to C (0)**: 1 is not an LLVM calling convention ID (LLVM's C is 0 and fastcc is 8). (**Fixed:** the value used to be copied verbatim, declaring functions `cc 1`; `lifter/spec/cdecl_calling_convention`.) WIN64 and VECTORCALL have no allocator (§8).
 - `FunctionLinkage`:
@@ -1046,17 +1046,30 @@ Epilogue: `return_stack_pointer = SP + 0`; `return_address = O7`.
 
 #### SPARC64_C (SPARC64_C.cpp), id 0
 
-Unchanged apart from one fix, and **untestable end to end**: `remill::Arch::Build` for SPARC64 aborts in this
-remill version (§16.6, `lifter/spec/sparc64_unsupported`).
+Implements the SPARC V9 (64-bit) ABI without AllocationState, with the register names of remill's Sleigh-based
+SPARC64 (`O0`–`O5`, `SP`, `O7`, `FS<n>`, `FD<n>`, `FQ<n>`; Ghidra's names, upper-cased):
 
-Param pool `o0..o5` (integral, kMaxBit64), `f1,f3,...,f31` (float 32), `d0,d2,...,d30` (float 64),
-`q0,q4,...,q28` (float 128). Return pool `o0..o5`, `f0..f31`, `d0..d30` even, `q0..q28` step 4.
-`IntegerTypeSplitter`: N > 64 → `[ceil(N/64) x i64]`.
-Results: `iN` ≤ 64 → `o0`; ≤ 384 → `o0..o5` typed **i64** (**fixed:** they were typed i32); else error. `ptr` → `o0`,
-`half`/`float` → `f0`, `double` → `d0`, `fp128` → `q0`; composites → pool + `CoalescePacking`, else error.
-Parameters: `CHECK(!injected_sret)`; stack offsets start at **2227** (2047 bias + 176 + 4, found experimentally),
-`mem_reg o6`; no slot-based FP register assignment (the real V9 ABI is slot-based).
-Epilogue: `return_stack_pointer = o6 + 0`; `return_address = o7`.
+- Arguments occupy 8-byte slots k = 0, 1, …. Integers of at most 64 bits and pointers keep their type: slots 0–5
+  are `O0`–`O5`, later slots are on the stack at `[SP + 2047 + 176 + 8·(k − 6)]` (2047 is the stack bias, 176 the
+  register save area plus six reserved argument words), right-justified (big-endian), so an `int` in slot 6 is at
+  `[SP + 2227]` and an `i64` in slot 7 at `[SP + 2231]`.
+- `float`/`double`/`fp128` in slot k < 16 are in `FS(2k+1)`/`FD(2k)`/`FQ(2k)` and do not use the integer register
+  of their slot; `fp128` starts at an even slot. Later ones are on the stack.
+- `i65..i128` and aggregates of at most 16 bytes are `i64` words in consecutive slots (16-byte values start at an
+  even slot); larger aggregates are passed by reference.
+- Results: integers in `O0` (`i128` → `O0, O1` as `i64`), `float` → `FS0`, `double` → `FD0`, `fp128` → `FQ0`,
+  integer-only aggregates of at most 32 bytes → `O0..O3` as `i64` words. Anything else is returned in memory: the
+  hidden parameter `__struct_ret_ptr` is the first argument (`O0`), and the callee returns it in `O0`. An explicit
+  `sret` parameter is likewise `O0`.
+- Simplifications: floating-point members of small aggregates are treated as integer words (the ABI puts them in
+  FP registers), and variadic floating-point arguments are not moved to integer registers.
+
+Epilogue: `return_stack_pointer = SP + 0`; `return_address = O7` (the callee returns to `O7 + 8`).
+
+(**Fixed:** this used AllocationState with the register names of remill's old SPARC64 architecture (`o0`, `f1`,
+`d0`, …) and could not be tested, because that architecture aborted; floating-point arguments were not
+slot-based; the stack offset was a fixed 2227 "found experimentally"; split integer results were typed `i32`;
+and an injected sret hit `CHECK(!injected_sret)`.)
 
 ### 8.11 Worked examples (real allocator output)
 
@@ -1922,6 +1935,126 @@ Output (`sparc.expected.txt`):
   stack pointer on return: SP + 0
 ```
 
+
+#### SPARC64
+
+`tests/golden/passes/AllocateSignatures/sparc64.ll` (`anvill-opt --passes=AllocateSignatures`):
+
+```llvm
+declare i32 @ints(i32 %a, i64 %b, ptr %c)
+declare i64 @seven_ints(i32, i32, i32, i32, i32, i32, i32 %g, i64 %h)
+declare double @floats(float %a, double %b, i32 %c, fp128 %q)
+declare i128 @wide(i32 %a, i128 %b)
+declare { i64, i32 } @small_struct({ i64, i32 } %s, i8 %c)
+declare { i64, i64, i64, i64, i64 } @big_struct({ i64, i64, i64 } %by_ref, i32 %x)
+declare double @late_double(double, double, double, double, double, double, double, double, double, double, double, double, double, double, double, double, double %on_stack)
+declare void @sret(ptr sret({ i64, i64, i64, i64, i64 }) %out, i32 %x)
+```
+
+Output (`sparc64.expected.txt`):
+
+```
+@ints i32 (i32, i64, ptr) cc 0
+  abi type: i32 (i32, i64, ptr)
+  calling convention: 0
+  param a: O0 : i32
+  param b: O1 : i64
+  param c: O2 : ptr
+  return: O0 : i32
+  return address: O7 : i64
+  stack pointer on return: SP + 0
+
+@seven_ints i64 (i32, i32, i32, i32, i32, i32, i32, i64) cc 0
+  abi type: i64 (i32, i32, i32, i32, i32, i32, i32, i64)
+  calling convention: 0
+  param param0: O0 : i32
+  param param1: O1 : i32
+  param param2: O2 : i32
+  param param3: O3 : i32
+  param param4: O4 : i32
+  param param5: O5 : i32
+  param g: [SP + 2227] : i32
+  param h: [SP + 2231] : i64
+  return: O0 : i64
+  return address: O7 : i64
+  stack pointer on return: SP + 0
+
+@floats double (float, double, i32, fp128) cc 0
+  abi type: double (float, double, i32, fp128)
+  calling convention: 0
+  param a: FS1 : float
+  param b: FD2 : double
+  param c: O2 : i32
+  param q: FQ8 : fp128
+  return: FD0 : double
+  return address: O7 : i64
+  stack pointer on return: SP + 0
+
+@wide i128 (i32, i128) cc 0
+  abi type: { i64, i64 } (i32, i64, i64)
+  calling convention: 0
+  param a: O0 : i32
+  param b0: O2 : i64
+  param b1: O3 : i64
+  return: O0 : i64
+  return: O1 : i64
+  return address: O7 : i64
+  stack pointer on return: SP + 0
+
+@small_struct { i64, i32 } ({ i64, i32 }, i8) cc 0
+  abi type: { i64, i64 } (i64, i64, i8)
+  calling convention: 0
+  param s0: O0 : i64
+  param s1: O1 : i64
+  param c: O2 : i8
+  return: O0 : i64
+  return: O1 : i64
+  return address: O7 : i64
+  stack pointer on return: SP + 0
+
+@big_struct { i64, i64, i64, i64, i64 } ({ i64, i64, i64 }, i32) cc 0
+  abi type: ptr (ptr, ptr, i32)
+  calling convention: 0
+  param __struct_ret_ptr: O0 : ptr
+  param by_ref: O1 : ptr
+  param x: O2 : i32
+  return: O0 : ptr
+  return address: O7 : i64
+  stack pointer on return: SP + 0
+
+@late_double double (double, double, double, double, double, double, double, double, double, double, double, double, double, double, double, double, double) cc 0
+  abi type: double (double, double, double, double, double, double, double, double, double, double, double, double, double, double, double, double, double)
+  calling convention: 0
+  param param0: FD0 : double
+  param param1: FD2 : double
+  param param2: FD4 : double
+  param param3: FD6 : double
+  param param4: FD8 : double
+  param param5: FD10 : double
+  param param6: FD12 : double
+  param param7: FD14 : double
+  param param8: FD16 : double
+  param param9: FD18 : double
+  param param10: FD20 : double
+  param param11: FD22 : double
+  param param12: FD24 : double
+  param param13: FD26 : double
+  param param14: FD28 : double
+  param param15: FD30 : double
+  param on_stack: [SP + 2303] : double
+  return: FD0 : double
+  return address: O7 : i64
+  stack pointer on return: SP + 0
+
+@sret void (ptr, i32) cc 0
+  abi type: ptr (ptr, i32)
+  calling convention: 0
+  param out: O0 : ptr
+  param x: O1 : i32
+  return: O0 : ptr
+  return address: O7 : i64
+  stack pointer on return: SP + 0
+```
 
 ---
 
@@ -7709,6 +7842,29 @@ The cxx-common/vcpkg setup described above has since been replaced by the [remil
 - **`cmake/SetupDependenciesPrefix.cmake`** picks up `dependencies/install` automatically. If `CMAKE_PREFIX_PATH` is already set, as in the Docker image, it layers `dependencies/install` on top of it.
 - **Docker / CI.** `ghcr.io/llvmparty/remill-template/dependencies:22.04-llvm19.1.7-remill2026.03.20` already provides LLVM 19.1.7 and remill's dependencies in `/dependencies`. The CI job and the root `Dockerfile` use that image as-is: they install Z3, protobuf and doctest from the Ubuntu packages and build anvill directly, without a dependency superbuild. Remill fetches sleigh itself, and the CMake falls back to module-mode `FindProtobuf` and a manual Z3 lookup when no CMake config packages exist.
 - **Defaults.** `ANVILL_ENABLE_INSTALL` and `ANVILL_ENABLE_PYTHON3_LIBS` now default to OFF.
+- **remill patch.** `dependencies/patches/remill/*.patch` are applied to the remill submodule when anvill is
+  configured (each one only if it is not applied yet; see `dependencies/patches/README.md`). The one patch adds a
+  Sleigh-based SPARC64 architecture to remill and fixes its Sleigh SPARC support:
+  - **Why.** remill replaced its hand-written SPARC32 semantics with Ghidra's Sleigh specification (remill #681,
+    arch name `sparc32_sleigh`). The old `sparc32` arch kept its decoder but lost its semantics, so every
+    instruction became a `kSPARC32EmulateInstruction` hyper call. The hand-written SPARC64 semantics still exist
+    but depend on deleted SPARC32 files, so their runtime is never built and `Arch::Build` for `sparc64` aborts.
+    `Arch.h` already declared `GetSPARC64Sleigh`, but nothing defined it.
+  - **`kArchSparc64_SLEIGH` (`sparc64_sleigh`).** Ghidra's `SparcV9_64.sla`, a `State` laid out after its register
+    space (`include/remill/Arch/SPARC64/Runtime/SleighState.h`: 64-bit `G0`–`I7`, `PC`, `NPC`, ancillary and
+    privileged registers, condition codes, `FS`/`FD`/`FQ` overlays in big-endian numbering), a register table and
+    a `sparc64_sleigh.bc` runtime. Ghidra decodes a delayed control transfer together with its delay slot, so the
+    architecture reports no separate delay slots.
+  - **`DECOMPILE_MODE`.** On both SPARCs it is a decoding-context value of 1 (as in `SparcV9.pspec`) instead of a
+    `State` register. Otherwise `save`/`restore` would also spill and fill the register-window backing store
+    through computed register-space addresses, which remill lifts as memory accesses.
+  - **Control-flow categories.** Ghidra's SPARC `call` is `o7 = inst_start; didrestore = 0; <delay slot>; call
+    target; if (didrestore == 0) goto inst_next; return [o7]`. The p-code after `CALL` is unreachable in remill's
+    p-code CFG, so it is now ignored when categorizing (unless an intra-instruction branch targets it). Instructions
+    that mix intra-instruction branches with exits (`ret` with `restore` in its delay slot) are categorized by their
+    exits. Limitation: the `call x; restore` tail-call idiom is treated as a normal call that returns to `pc + 8`.
+  - The SPARC32 FP register overlays now follow the big-endian numbering (`fs0` is the high half of `fd0`).
+    `Arch::IsSPARC32`/`IsSPARC64` also accept the Sleigh variants.
 - **Source changes.** These were mechanical LLVM 16–19 API updates:
   - `starts_with`, `std::optional` and the `TypeSize` getters;
   - `ConstantFoldIntegerCast` in place of the removed `zext` constant expression;
@@ -7769,6 +7925,7 @@ specify anvill's observable behaviour: a clean-room reimplementation is correct 
 | `passes/AllocateSignatures/aarch32.ll` | AArch32 (AAPCS, soft-float, Linux). |
 | `passes/AllocateSignatures/aarch64.ll` | AArch64 (AAPCS64, Linux). |
 | `passes/AllocateSignatures/sparc.ll` | SPARC32 (Linux). |
+| `passes/AllocateSignatures/sparc64.ll` | SPARC V9 (64-bit, Linux) with remill's Sleigh-based architecture (sparc64_sleigh): 8-byte argument slots; the first six integer slots are in O0-O5, floating-point arguments use the FP register of their slot (FS2k+1, FD2k, … |
 | `passes/AllocateSignatures/x86_32.ll` | 32-bit x86 (Linux): cdecl, stdcall, fastcall and thiscall. |
 | `passes/AllocateSignatures/x86_64_sysv.ll` | Calling-convention allocation for x86-64 System V (Linux), as computed by FunctionDecl::Create for each declared function: the location of every parameter and return value, the return address, and the stack pointer after the … |
 | `passes/AllocateSignatures/x86_64_sysv_avx.ll` | x86-64 System V with AVX (--arch=amd64_avx): each XMM constraint gains a YMM variant (ApplyX86Ext), so 256-bit vectors are passed and returned in YMM registers while smaller values keep the XMM names. |
@@ -7824,7 +7981,11 @@ specify anvill's observable behaviour: a clean-room reimplementation is correct 
 | `lifter/arch/aarch32_even_pair.textproto` | AArch32 (base AAPCS): a 64-bit argument starts at an even register, so `b` is in R2:R3 and R1 is unused. |
 | `lifter/arch/aarch64_add.textproto` | AArch64 with a type-only prototype: arguments in W0 and W1, the result in W0, the return address in X30 (LR). |
 | `lifter/arch/aarch64_indirect_result.textproto` | AArch64 result larger than 16 bytes: the caller passes the address of the result buffer in X8, so the lifted native function takes a hidden first `ptr` parameter and returns void. |
-| `lifter/arch/sparc32_no_semantics.textproto` | SPARC32 leaf function whose addition is in the delay slot of `retl`. |
+| `lifter/arch/sparc32_call.textproto` | SPARC32 function with a register window: `save` makes the caller's O registers the callee's I registers, the call's argument is computed in its delay slot, and `restore` both pops the window and computes the result (g(a + 1) + … |
+| `lifter/arch/sparc32_delay_slot.textproto` | SPARC32 leaf function whose addition is in the delay slot of `retl`. |
+| `lifter/arch/sparc64_branch.textproto` | SPARC V9 conditional branch with a delay slot that is not annulled: the `mov 20` in the delay slot executes on both paths, so the result is 20 when x == 0 and 10 otherwise. |
+| `lifter/arch/sparc64_call.textproto` | SPARC V9 function with a register window: `save` makes the caller's O registers the callee's I registers, the call's argument is computed in its delay slot, and `restore` both pops the window and computes the result (g(a + 1) … |
+| `lifter/arch/sparc64_leaf.textproto` | SPARC V9 (64-bit) leaf function, lifted with remill's Sleigh-based `sparc64_sleigh` architecture: the 64-bit addition in the delay slot of `retl` is part of the same decoded instruction. |
 | `lifter/arch/x86_cdecl.textproto` | 32-bit x86 cdecl with a type-only prototype: the allocator puts both arguments on the stack in 4-byte slots ([ESP + 4], [ESP + 8]) and the result in EAX; the caller pops the arguments (ESP + 4 after the return). |
 | `lifter/arch/x86_fastcall.textproto` | 32-bit x86 fastcall: the first two 32-bit arguments are in ECX and EDX, the third is on the stack at [ESP + 4], and the callee pops it (`ret 4`, ESP + 8 after the return). |
 | `lifter/basic/increment.textproto` | `int inc(int x) { return x + 1; }` with an explicit-location prototype (EDI → EAX): the end-to-end example of §10.10. |
@@ -7853,7 +8014,6 @@ specify anvill's observable behaviour: a clean-room reimplementation is correct 
 | `lifter/spec/duplicate_function.textproto` | Two functions at the same address are rejected. |
 | `lifter/spec/duplicate_override.textproto` | Two control-flow overrides for the same address are rejected (previously a CHECK failure that aborted the process). |
 | `lifter/spec/global_variables.textproto` | Global variables are lifted as `var_<addr>_<type>` with an initializer built from the memory bytes. |
-| `lifter/spec/sparc64_unsupported.textproto` | SPARC64 does not work with the current remill: remill::Arch::Build for SPARC64 populates its register table using the register window type, which only exists after a semantics module was loaded, so building the architecture … |
 | `lifter/spec/unsupported_arch.textproto` | The architecture must be specified. |
 | `lifter/spec/void_return.textproto` | A void prototype may omit `return` entirely (previously the loader required `return { type { base: BT_VOID } }` and silently skipped the function). |
 
@@ -7887,6 +8047,7 @@ reimplementation that wants the original output must reproduce the "old" side of
 | 16 | Float vectors crash the allocator; a failed vector allocation "succeeds" with zero locations. | Fixed | `AllocateSignatures/x86_64_sysv*.ll` (`<4 x float>`, `<8 x float>`) |
 | 16a | AArch64: a ninth integer argument and `i128` go to V registers; `sret` in X0; no HFAs; large aggregates rejected. | Fixed | `AllocateSignatures/aarch64.ll`, `lifter/arch/aarch64_indirect_result` |
 | 16b | SPARC32: `double` arguments always on the stack; aggregate results rejected; register names no longer exist in remill. | Fixed | `AllocateSignatures/sparc.ll` |
+| 16d | SPARC64: old register names, not slot-based, fixed stack offset 2227. | Fixed (V9 ABI rewrite) | `AllocateSignatures/sparc64.ll` |
 | 16c | x86-32 cdecl returns small aggregates in EAX:EDX (MSVC style) even on Linux, where the i386 psABI uses memory. | Kept | `AllocateSignatures/x86_32.ll` |
 | | **Types (§7)** | | |
 | 17 | The encoder always uses unsigned letters; `d`/`D` and `w`/`W` sizes disagree with TypeEncoding.md. | Fixed (docs corrected; unsigned letters kept, documented) | `docs/TypeEncoding.md` |
@@ -7903,7 +8064,8 @@ reimplementation that wants the original output must reproduce the "old" side of
 | 26a | Tail calls did not return the callee's result. | Fixed | `lifter/flow/tail_call` |
 | 26b | Declaration-only functions (no uses) are removed by GlobalDCE in `OptimizeModule`. | Open (documented) | `lifter/flow/declaration_only` |
 | 26c | A data pointer to its own variable stays an `inttoptr` constant. | Open (documented) | `lifter/data/pointers` |
-| 26d | SPARC32 instructions have no semantics in this remill (EmulateInstruction hyper calls); SPARC64 `Arch::Build` aborts. | Open (upstream remill) | `lifter/arch/sparc32_no_semantics`, `lifter/spec/sparc64_unsupported` |
+| 26d | SPARC32 lifts every instruction as an EmulateInstruction hyper call; SPARC64 `Arch::Build` aborts. (Cause: anvill used remill's old SPARC archs, whose semantics are gone.) | Fixed (Sleigh-based archs; remill patch for SPARC64, §16.6) | `lifter/arch/sparc32_*`, `lifter/arch/sparc64_*`, `AllocateSignatures/sparc64.ll` |
+| 26e | SPARC `call x; restore` (tail-call idiom) is treated as a call that returns to `pc + 8`. | Open (documented) | — |
 | | **Cross-reference folder (§12)** | | |
 | 27 | `ICmp ule` is `<`; clz/ctz/ctpop use 64-bit semantics (clz/ctz of 0 UB); oversized shifts are not invalid. | Fixed | `CrossReferenceFolderTest.cpp` |
 | 28 | The entity fast path leaves flags uninitialised; `Displacement()` returns 0 for widths other than 8/16/32/64. | Fixed | `CrossReferenceFolderTest.cpp`, `RemoveStackPointerCExprs/*` |

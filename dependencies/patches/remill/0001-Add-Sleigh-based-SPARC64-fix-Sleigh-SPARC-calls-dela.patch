@@ -1,0 +1,1240 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: anvill <anvill@localhost>
+Date: Mon, 9 Nov 2026 16:37:05 +0000
+Subject: [PATCH] Add Sleigh-based SPARC64; fix Sleigh SPARC calls, delay-slot
+ restore and DECOMPILE_MODE
+
+- New architecture kArchSparc64_SLEIGH ("sparc64_sleigh"): Ghidra's
+  SparcV9_64.sla with a State laid out after its register space
+  (SPARC64/Runtime/SleighState.h), a register table, and a
+  sparc64_sleigh.bc runtime. Arch::IsSPARC32/IsSPARC64 also accept the
+  Sleigh variants.
+- SPARC (32 and 64): DECOMPILE_MODE is a decoding-context value of 1, as
+  in SparcV9.pspec, so save/restore do not spill the register window
+  through computed register-space addresses.
+- ControlFlowStructuring: ignore p-code after the first CALL/CALLIND
+  (unreachable in the p-code CFG unless an intra-instruction branch
+  targets it), so SPARC calls are categorized as calls; and categorize
+  instructions that mix intra-instruction branches with exits by their
+  exits (e.g. ret with restore in the delay slot).
+- SPARC32: the FS/FD/FQ overlays follow Ghidra's big-endian register
+  numbering on a little-endian host.
+---
+ CMakeLists.txt                                |   1 +
+ include/remill/Arch/Arch.h                    |   2 +-
+ include/remill/Arch/Name.h                    |   1 +
+ .../remill/Arch/SPARC64/Runtime/SleighState.h | 134 +++++++
+ lib/Arch/Arch.cpp                             |  15 +-
+ lib/Arch/Instruction.cpp                      |   1 +
+ lib/Arch/Name.cpp                             |   4 +
+ lib/Arch/SPARC64/CMakeLists.txt               |   7 +
+ lib/Arch/SPARC64/Runtime/CMakeLists.txt       |  74 ++--
+ lib/Arch/SPARC64/Runtime/SleighBasicBlock.cpp |  18 +
+ .../SPARC64/Runtime/SleighInstructions.cpp    |  45 +++
+ lib/Arch/Sleigh/CMakeLists.txt                |   5 +
+ lib/Arch/Sleigh/ControlFlowStructuring.cpp    |  76 +++-
+ lib/Arch/Sleigh/SPARC32Arch.cpp               |  14 +-
+ lib/Arch/Sleigh/SPARC32Base.cpp               | 105 ++---
+ lib/Arch/Sleigh/SPARC64Arch.cpp               | 375 ++++++++++++++++++
+ lib/Arch/Sleigh/SPARC64Arch.h                 |  83 ++++
+ 17 files changed, 852 insertions(+), 108 deletions(-)
+ create mode 100644 include/remill/Arch/SPARC64/Runtime/SleighState.h
+ create mode 100644 lib/Arch/SPARC64/Runtime/SleighBasicBlock.cpp
+ create mode 100644 lib/Arch/SPARC64/Runtime/SleighInstructions.cpp
+ create mode 100644 lib/Arch/Sleigh/SPARC64Arch.cpp
+ create mode 100644 lib/Arch/Sleigh/SPARC64Arch.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index e0695e7..381fe2e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -133,6 +133,7 @@ endif()
+ # Configuration options for semantics
+ #
+ option(REMILL_BARRIER_AS_NOP "Remove compiler barriers (inline assembly) in semantics" OFF)
++option(REMILL_BUILD_SPARC64_RUNTIME "Build the Runtime for the Sleigh-based SPARC64 architecture (sparc64_sleigh)" ON)
+ option(REMILL_BUILD_SPARC32_RUNTIME "Build the Runtime for SPARC32. Turn this off if you have include errors with <bits/c++config.h>, or read the README for a fix" ON)
+ 
+ #
+diff --git a/include/remill/Arch/Arch.h b/include/remill/Arch/Arch.h
+index 269e266..7d1743b 100644
+--- a/include/remill/Arch/Arch.h
++++ b/include/remill/Arch/Arch.h
+@@ -454,7 +454,7 @@ class Arch {
+   static ArchPtr GetSPARC32Sleigh(llvm::LLVMContext *context, OSName os,
+                                 ArchName arch_name);
+ 
+-  // Defined in `lib/Arch/Sleigh/SPARC64/SPARC64.cpp
++  // Defined in `lib/Arch/Sleigh/SPARC64Arch.cpp`.
+   static ArchPtr GetSPARC64Sleigh(llvm::LLVMContext *context, OSName os,
+                                   ArchName arch_name);
+ 
+diff --git a/include/remill/Arch/Name.h b/include/remill/Arch/Name.h
+index 1a076b3..beef20e 100644
+--- a/include/remill/Arch/Name.h
++++ b/include/remill/Arch/Name.h
+@@ -118,6 +118,7 @@ enum ArchName : std::uint32_t {
+   kArchSparc32,
+   kArchSparc64,
+   kArchSparc32_SLEIGH,
++  kArchSparc64_SLEIGH,
+ 
+   kArchThumb2LittleEndian,
+ 
+diff --git a/include/remill/Arch/SPARC64/Runtime/SleighState.h b/include/remill/Arch/SPARC64/Runtime/SleighState.h
+new file mode 100644
+index 0000000..3fa3d77
+--- /dev/null
++++ b/include/remill/Arch/SPARC64/Runtime/SleighState.h
+@@ -0,0 +1,134 @@
++/*
++ * Copyright (c) 2026 Trail of Bits, Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#pragma once
++
++// Machine state for the Sleigh-based 64-bit SPARC (SPARC V9) architecture
++// (`kArchSparc64_SLEIGH`). The registers mirror the register space of
++// Ghidra's `SparcV9_64.sla`: every register that the Sleigh specification
++// names (upper-cased, see `SleighLifter`) has a field here, and is listed in
++// `SPARC64Arch::PopulateRegisterTable`. Registers that are not listed (the
++// register-window backing store `w010`...`w737`, `s_*`, hypervisor state)
++// become function-local values in the lifted code.
++//
++// Each register is preceded by `volatile` padding, as in the other remill
++// states, so that the optimizer never merges accesses to adjacent registers.
++
++#pragma clang diagnostic push
++#pragma clang diagnostic fatal "-Wpadded"
++
++#include "remill/Arch/Runtime/State.h"
++#include "remill/Arch/Runtime/Types.h"
++
++struct SPARC64Reg final {
++  volatile uint64_t _pad;
++  uint64_t qword;
++} __attribute__((packed));
++
++static_assert(16 == sizeof(SPARC64Reg), "Invalid packing of `SPARC64Reg`.");
++
++// General purpose registers, in the order of Ghidra's register space.
++struct SPARC64GPR final {
++  SPARC64Reg g0, g1, g2, g3, g4, g5, g6, g7;
++  SPARC64Reg o0, o1, o2, o3, o4, o5, sp, o7;
++  SPARC64Reg l0, l1, l2, l3, l4, l5, l6, l7;
++  SPARC64Reg i0, i1, i2, i3, i4, i5, fp, i7;
++} __attribute__((packed));
++
++static_assert(32 * 16 == sizeof(SPARC64GPR),
++              "Invalid packing of `SPARC64GPR`.");
++
++// Ancillary state registers (Ghidra's 0x1000 bank, except PC and nPC).
++struct SPARC64ASR final {
++  SPARC64Reg tick, y, ccr, pcr, pic, gsr, softint_set, softint_clr, softint,
++      tick_cmpr, stick, stick_cmpr;
++} __attribute__((packed));
++
++// Privileged registers (Ghidra's 0x6000 bank).
++struct SPARC64PrivRegs final {
++  SPARC64Reg tpc1, tpc2, tpc3, tpc4;
++  SPARC64Reg tnpc1, tnpc2, tnpc3, tnpc4;
++  SPARC64Reg tstate1, tstate2, tstate3, tstate4;
++  SPARC64Reg tt1, tt2, tt3, tt4;
++  SPARC64Reg tck, tba, pstate, tl, pil, cwp, cansave, canrestore, cleanwin,
++      otherwin, wstate, fq, ver, gl;
++} __attribute__((packed));
++
++// Integer and extended condition codes, the floating-point condition codes
++// and other one-byte registers.
++struct SPARC64Flags final {
++  volatile uint8_t _0;
++  uint8_t x_nf;
++  volatile uint8_t _1;
++  uint8_t x_zf;
++  volatile uint8_t _2;
++  uint8_t x_vf;
++  volatile uint8_t _3;
++  uint8_t x_cf;
++  volatile uint8_t _4;
++  uint8_t i_nf;
++  volatile uint8_t _5;
++  uint8_t i_zf;
++  volatile uint8_t _6;
++  uint8_t i_vf;
++  volatile uint8_t _7;
++  uint8_t i_cf;
++  volatile uint8_t _8;
++  uint8_t fcc0;
++  volatile uint8_t _9;
++  uint8_t fcc1;
++  volatile uint8_t _10;
++  uint8_t fcc2;
++  volatile uint8_t _11;
++  uint8_t fcc3;
++  volatile uint8_t _12;
++  uint8_t asi;
++  volatile uint8_t _13;
++  uint8_t fprs;
++  volatile uint8_t _14;
++  uint8_t didrestore;      // Fake register of the Sleigh specification.
++  volatile uint8_t _15;
++  uint8_t decompile_mode;  // Fake register of the Sleigh specification.
++} __attribute__((packed));
++
++static_assert(32 == sizeof(SPARC64Flags), "Invalid packing of `SPARC64Flags`.");
++
++// Floating-point registers: `fs0`-`fs31` overlay `fq0`-`fq28`, `fd0`-`fd62`
++// overlay `fq0`-`fq60` (big-endian register numbering, so `fs0` is the high
++// half of `fd0`; see `SPARC64Arch::PopulateRegisterTable`).
++struct alignas(16) SPARC64FPURegs final {
++  vec128_t v[16];
++} __attribute__((packed));
++
++static_assert(256 == sizeof(SPARC64FPURegs),
++              "Invalid packing of `SPARC64FPURegs`.");
++
++struct alignas(16) SPARC64SleighState : public ArchState {
++  SPARC64FPURegs fpreg;  // 256 bytes.
++  SPARC64GPR gpr;  // 512 bytes.
++  SPARC64Reg pc;
++  SPARC64Reg npc;
++  SPARC64ASR asr;
++  SPARC64Reg fsr;
++  SPARC64PrivRegs priv;
++  SPARC64Flags flags;
++  volatile uint64_t _0;
++  volatile uint64_t _1;
++};
++
++struct State : public SPARC64SleighState {};
++
++#pragma clang diagnostic pop
+diff --git a/lib/Arch/Arch.cpp b/lib/Arch/Arch.cpp
+index e61d646..81834f4 100644
+--- a/lib/Arch/Arch.cpp
++++ b/lib/Arch/Arch.cpp
+@@ -64,7 +64,8 @@ static unsigned AddressSize(ArchName arch_name) {
+     case kArchAMD64_SLEIGH:
+     case kArchAArch64LittleEndian:
+     case kArchAArch64LittleEndian_SLEIGH:
+-    case kArchSparc64: return 64;
++    case kArchSparc64:
++    case kArchSparc64_SLEIGH: return 64;
+   }
+   return 0;
+ }
+@@ -115,6 +116,7 @@ ArchLocker Arch::Lock(ArchName arch_name_) {
+     case ArchName::kArchAMD64_SLEIGH:
+     case ArchName::kArchX86_SLEIGH:
+     case ArchName::kArchSparc32_SLEIGH:
++    case ArchName::kArchSparc64_SLEIGH:
+     case ArchName::kArchPPC: return &gSleighArchLock;
+     default: return ArchLocker();
+   }
+@@ -241,6 +243,11 @@ auto Arch::GetArchByName(llvm::LLVMContext *context_, OSName os_name_,
+       return GetSPARC32Sleigh(context_, os_name_, arch_name_);
+     }
+ 
++    case kArchSparc64_SLEIGH: {
++      DLOG(INFO) << "Using architecture: 64-bit SPARC64_Sleigh";
++      return GetSPARC64Sleigh(context_, os_name_, arch_name_);
++    }
++
+     case kArchPPC: {
+       DLOG(INFO) << "Using architecture: PowerPC";
+       return GetSleighPPC(context_, os_name_, arch_name_);
+@@ -416,11 +423,13 @@ bool Arch::IsAArch64(void) const {
+ }
+ 
+ bool Arch::IsSPARC32(void) const {
+-  return remill::kArchSparc32 == arch_name;
++  return remill::kArchSparc32 == arch_name ||
++         remill::kArchSparc32_SLEIGH == arch_name;
+ }
+ 
+ bool Arch::IsSPARC64(void) const {
+-  return remill::kArchSparc64 == arch_name;
++  return remill::kArchSparc64 == arch_name ||
++         remill::kArchSparc64_SLEIGH == arch_name;
+ }
+ 
+ bool Arch::IsPPC(void) const {
+diff --git a/lib/Arch/Instruction.cpp b/lib/Arch/Instruction.cpp
+index ba6a12f..3e8cfde 100644
+--- a/lib/Arch/Instruction.cpp
++++ b/lib/Arch/Instruction.cpp
+@@ -671,6 +671,7 @@ std::string Instruction::Serialize(void) const {
+       case kArchAArch64LittleEndian: ss << "AArch64"; break;
+       case kArchSparc32_SLEIGH:
+       case kArchSparc32: ss << "SPARC32"; break;
++      case kArchSparc64_SLEIGH:
+       case kArchSparc64: ss << "SPARC64"; break;
+       case kArchPPC: ss << "PowerPC"; break;
+     }
+diff --git a/lib/Arch/Name.cpp b/lib/Arch/Name.cpp
+index bd6697f..92b277e 100644
+--- a/lib/Arch/Name.cpp
++++ b/lib/Arch/Name.cpp
+@@ -75,6 +75,9 @@ ArchName GetArchName(std::string_view arch_name) {
+   } else if (arch_name == "sparc32_sleigh") {
+     return kArchSparc32_SLEIGH;
+ 
++  } else if (arch_name == "sparc64_sleigh") {
++    return kArchSparc64_SLEIGH;
++
+   } else if (arch_name == "ppc") {
+     return kArchPPC;
+ 
+@@ -103,6 +106,7 @@ static const std::string_view kArchNames[] = {
+     [kArchSparc32] = "sparc32",
+     [kArchSparc64] = "sparc64",
+     [kArchSparc32_SLEIGH] = "sparc32_sleigh",
++    [kArchSparc64_SLEIGH] = "sparc64_sleigh",
+     [kArchThumb2LittleEndian] = "thumb2",
+     [kArchPPC] = "ppc",
+ };
+diff --git a/lib/Arch/SPARC64/CMakeLists.txt b/lib/Arch/SPARC64/CMakeLists.txt
+index 0b409ef..f4758c4 100644
+--- a/lib/Arch/SPARC64/CMakeLists.txt
++++ b/lib/Arch/SPARC64/CMakeLists.txt
+@@ -31,6 +31,13 @@ add_library(remill_arch_sparc64 STATIC
+   Extract.cpp
+ )
+ 
++# The hand-written SPARC64 semantics depend on SPARC32 semantics files that
++# were removed with the switch to Sleigh, so only the runtime of the
++# Sleigh-based `sparc64_sleigh` architecture is built.
++if(${REMILL_BUILD_SPARC64_RUNTIME} AND CMAKE_SIZEOF_VOID_P EQUAL 8)
++  add_subdirectory(Runtime)
++endif()
++
+ target_link_libraries(remill_arch_sparc64 PUBLIC
+   remill_settings
+ )
+diff --git a/lib/Arch/SPARC64/Runtime/CMakeLists.txt b/lib/Arch/SPARC64/Runtime/CMakeLists.txt
+index 9fa64ec..2a09e8b 100644
+--- a/lib/Arch/SPARC64/Runtime/CMakeLists.txt
++++ b/lib/Arch/SPARC64/Runtime/CMakeLists.txt
+@@ -15,61 +15,37 @@
+ cmake_minimum_required(VERSION 3.21)
+ project(sparc64_runtime)
+ 
+-set(SPARC64RUNTIME_SOURCEFILES
+-  Instructions.cpp
+-  BasicBlock.cpp
++# Runtime (semantics module) of the Sleigh-based 64-bit SPARC architecture,
++# `sparc64_sleigh`: it only needs to provide the `State` type, the intrinsics
++# and the fallback instruction handlers, since instruction semantics come
++# from Ghidra's `SparcV9_64.sla`. (The hand-written `sparc64` semantics in
++# `../Semantics` depend on SPARC32 semantics files that no longer exist.)
++set(SPARC64SLEIGHRUNTIME_SOURCEFILES
++  SleighInstructions.cpp
++  SleighBasicBlock.cpp
+ 
+   "${REMILL_LIB_DIR}/Arch/Runtime/Intrinsics.cpp"
+ )
+ 
+-set_source_files_properties(Instructions.cpp PROPERTIES COMPILE_FLAGS "-O3 -g0")
+-set_source_files_properties(BasicBlock.cpp PROPERTIES COMPILE_FLAGS "-O0 -g3")
++set_source_files_properties(SleighInstructions.cpp PROPERTIES COMPILE_FLAGS "-O3 -g0")
++set_source_files_properties(SleighBasicBlock.cpp PROPERTIES COMPILE_FLAGS "-O0 -g3")
+ 
+ if (REMILL_BARRIER_AS_NOP)
+   set(EXTRA_BC_FLAGS "-DREMILL_BARRIER_AS_NOP")
+ endif(REMILL_BARRIER_AS_NOP)
+ 
+-function(add_runtime_helper target_name little_endian)
+-  message(" > Generating runtime target: ${target_name}")
+-
+-  add_runtime(${target_name}
+-    SOURCES ${SPARC64RUNTIME_SOURCEFILES}
+-    ADDRESS_SIZE 64
+-    DEFINITIONS "LITTLE_ENDIAN=${little_endian}"
+-    BCFLAGS "${EXTRA_BC_FLAGS}"
+-    INCLUDEDIRECTORIES "${REMILL_INCLUDE_DIR}" "${REMILL_SOURCE_DIR}"
+-    INSTALLDESTINATION "${REMILL_INSTALL_SEMANTICS_DIR}"
+-    ARCH sparc64
+-
+-    DEPENDENCIES
+-    "${REMILL_INCLUDE_DIR}/remill/Arch/Runtime/Float.h"
+-    "${REMILL_INCLUDE_DIR}/remill/Arch/Runtime/State.h"
+-    "${REMILL_INCLUDE_DIR}/remill/Arch/Runtime/Types.h"
+-    "${REMILL_INCLUDE_DIR}/remill/Arch/Runtime/Operators.h"
+-    "${REMILL_INCLUDE_DIR}/remill/Arch/Runtime/Intrinsics.h"
+-    "${REMILL_INCLUDE_DIR}/remill/Arch/Runtime/HyperCall.h"
+-    "${REMILL_INCLUDE_DIR}/remill/Arch/Runtime/Definitions.h"
+-
+-    "${REMILL_INCLUDE_DIR}/remill/Arch/SPARC64/Runtime/State.h"
+-    "${REMILL_INCLUDE_DIR}/remill/Arch/SPARC64/Runtime/Types.h"
+-
+-    "${REMILL_LIB_DIR}/Arch/SPARC32/Semantics/FLAGS.cpp"
+-    "${REMILL_LIB_DIR}/Arch/SPARC32/Semantics/COND.cpp"
+-
+-    "${REMILL_LIB_DIR}/Arch/SPARC64/Semantics/ADDRESS.cpp"
+-    "${REMILL_LIB_DIR}/Arch/SPARC64/Semantics/BINARY.cpp"
+-    "${REMILL_LIB_DIR}/Arch/SPARC64/Semantics/BITBYTE.cpp"
+-    "${REMILL_LIB_DIR}/Arch/SPARC64/Semantics/BRANCH.cpp"
+-    "${REMILL_LIB_DIR}/Arch/SPARC64/Semantics/DATAXFER.cpp"
+-    "${REMILL_LIB_DIR}/Arch/SPARC64/Semantics/TRAP.cpp"
+-    "${REMILL_LIB_DIR}/Arch/SPARC64/Semantics/FOP.cpp"
+-    "${REMILL_LIB_DIR}/Arch/SPARC64/Semantics/LOGICAL.cpp"
+-    "${REMILL_LIB_DIR}/Arch/SPARC64/Semantics/MISC.cpp"
+-    "${REMILL_LIB_DIR}/Arch/SPARC64/Semantics/VIS.cpp"
+-    "${REMILL_LIB_DIR}/Arch/SPARC64/Semantics/WRASR.cpp"
+-  )
+-endfunction()
+-
+-if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+-  add_runtime_helper(sparc64 0)
+-endif()
++add_runtime(sparc64_sleigh
++  SOURCES ${SPARC64SLEIGHRUNTIME_SOURCEFILES}
++  ADDRESS_SIZE 64
++  DEFINITIONS "LITTLE_ENDIAN=0"
++  BCFLAGS "${EXTRA_BC_FLAGS}"
++  INCLUDEDIRECTORIES "${REMILL_INCLUDE_DIR}" "${REMILL_SOURCE_DIR}"
++  INSTALLDESTINATION "${REMILL_INSTALL_SEMANTICS_DIR}"
++  ARCH sparc64
++
++  DEPENDENCIES
++  "${REMILL_INCLUDE_DIR}/remill/Arch/Runtime/Intrinsics.h"
++  "${REMILL_INCLUDE_DIR}/remill/Arch/Runtime/HyperCall.h"
++  "${REMILL_INCLUDE_DIR}/remill/Arch/Runtime/Definitions.h"
++  "${REMILL_INCLUDE_DIR}/remill/Arch/SPARC64/Runtime/SleighState.h"
++)
+diff --git a/lib/Arch/SPARC64/Runtime/SleighBasicBlock.cpp b/lib/Arch/SPARC64/Runtime/SleighBasicBlock.cpp
+new file mode 100644
+index 0000000..33ec59b
+--- /dev/null
++++ b/lib/Arch/SPARC64/Runtime/SleighBasicBlock.cpp
+@@ -0,0 +1,18 @@
++/*
++ * Copyright (c) 2026 Trail of Bits, Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include "remill/Arch/Runtime/Float.h"
++#include "remill/Arch/SPARC64/Runtime/SleighState.h"
+diff --git a/lib/Arch/SPARC64/Runtime/SleighInstructions.cpp b/lib/Arch/SPARC64/Runtime/SleighInstructions.cpp
+new file mode 100644
+index 0000000..b7200aa
+--- /dev/null
++++ b/lib/Arch/SPARC64/Runtime/SleighInstructions.cpp
+@@ -0,0 +1,45 @@
++/*
++ * Copyright (c) 2026 Trail of Bits, Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include "remill/Arch/Runtime/Float.h"
++#include "remill/Arch/Runtime/Intrinsics.h"
++#include "remill/Arch/Runtime/Operators.h"
++#include "remill/Arch/SPARC64/Runtime/SleighState.h"
++
++// A definition is required to ensure that LLVM doesn't optimize the `State`
++// type out of the bitcode.
++State __remill_state;
++
++#define HYPER_CALL state.hyper_call
++
++namespace {
++
++// Takes the place of an unsupported instruction.
++DEF_SEM(HandleUnsupported) {
++  return __remill_sync_hyper_call(state, memory,
++                                  SyncHyperCall::kSPARC64EmulateInstruction);
++}
++
++// Takes the place of an invalid instruction.
++DEF_SEM(HandleInvalidInstruction) {
++  HYPER_CALL = AsyncHyperCall::kInvalidInstruction;
++  return memory;
++}
++
++}  // namespace
++
++DEF_ISEL(UNSUPPORTED_INSTRUCTION) = HandleUnsupported;
++DEF_ISEL(INVALID_INSTRUCTION) = HandleInvalidInstruction;
+diff --git a/lib/Arch/Sleigh/CMakeLists.txt b/lib/Arch/Sleigh/CMakeLists.txt
+index aa93dde..ff3d7bc 100644
+--- a/lib/Arch/Sleigh/CMakeLists.txt
++++ b/lib/Arch/Sleigh/CMakeLists.txt
+@@ -38,6 +38,8 @@ add_library(remill_arch_sleigh STATIC
+   "${REMILL_INCLUDE_DIR}/remill/Arch/SPARC32/Runtime/Types.h"
+   "${REMILL_INCLUDE_DIR}/remill/Arch/SPARC32/SPARC32Base.h"
+ 
++  "${REMILL_INCLUDE_DIR}/remill/Arch/SPARC64/Runtime/SleighState.h"
++
+   "${REMILL_INCLUDE_DIR}/remill/Arch/PPC/Runtime/State.h"
+ 
+   Arch.h
+@@ -61,6 +63,9 @@ add_library(remill_arch_sleigh STATIC
+   SPARC32Arch.cpp
+   SPARC32Arch.h
+   SPARC32Base.cpp
++
++  SPARC64Arch.cpp
++  SPARC64Arch.h
+ )
+ 
+ add_dependencies(remill_arch_sleigh sleigh_custom_specs)
+diff --git a/lib/Arch/Sleigh/ControlFlowStructuring.cpp b/lib/Arch/Sleigh/ControlFlowStructuring.cpp
+index 5de579b..e5bb56a 100644
+--- a/lib/Arch/Sleigh/ControlFlowStructuring.cpp
++++ b/lib/Arch/Sleigh/ControlFlowStructuring.cpp
+@@ -426,11 +426,53 @@ After we find coarse categories and the flows follow these patterns, we determin
+ Finally we pass these coarse flows to a final categorizer to attempt to print these into a flow type
+ */
+ 
++// Returns the p-code ops that can execute before the instruction leaves
++// through a call. The p-code CFG sends `CALL`/`CALLIND` straight to the
++// instruction exit (see `PcodeCFGBuilder`), so ops after the first call are
++// unreachable unless an intra-instruction branch targets them. Some
++// specifications put code there that models what happens after the callee
++// returns, e.g. SPARC's
++//
++//    o7 = inst_start; didrestore = 0; delayslot(1); call target;
++//    if (didrestore == 0) goto inst_next; return [o7];
++//
++// which would otherwise make the instruction uncategorizable.
++static std::vector<RemillPcodeOp>
++OpsUpToFirstCall(const std::vector<RemillPcodeOp> &ops) {
++  std::optional<size_t> first_call;
++  for (size_t i = 0; i < ops.size(); ++i) {
++    if (ops[i].op == CPUI_CALL || ops[i].op == CPUI_CALLIND) {
++      first_call = i;
++      break;
++    }
++  }
++  if (!first_call) {
++    return ops;
++  }
++
++  // Keep everything if an intra-instruction branch lands after the call.
++  for (size_t i = 0; i < ops.size(); ++i) {
++    const auto &op = ops[i];
++    if ((op.op == CPUI_BRANCH || op.op == CPUI_CBRANCH) && !op.vars.empty() &&
++        isVarnodeInConstantSpace(op.vars[0])) {
++      const auto target =
++          static_cast<int64_t>(i) + static_cast<int64_t>(op.vars[0].offset);
++      if (target > static_cast<int64_t>(*first_call)) {
++        return ops;
++      }
++    }
++  }
++
++  return std::vector<RemillPcodeOp>(ops.begin(),
++                                    ops.begin() + *first_call + 1);
++}
++
+ ControlFlowStructureAnalysis::SleighDecodingResult
+ ControlFlowStructureAnalysis::ComputeCategory(
+-    const std::vector<RemillPcodeOp> &ops, uint64_t fallthrough_addr,
++    const std::vector<RemillPcodeOp> &all_ops, uint64_t fallthrough_addr,
+     DecodingContext entry_context) {
+ 
++  const auto ops = OpsUpToFirstCall(all_ops);
+   auto maybe_cc = CoarseFlows(ops, fallthrough_addr);
+   if (!maybe_cc) {
+     DLOG(ERROR) << "No coarse flow found";
+@@ -439,12 +481,42 @@ ControlFlowStructureAnalysis::ComputeCategory(
+ 
+   auto cc = std::move(*maybe_cc);
+ 
++  auto context_updater = BuildContextUpdater(entry_context);
++  auto no_context_updates = [&ops, &context_updater]() {
++    return std::all_of(
++        ops.begin(), ops.end(), [&context_updater](const RemillPcodeOp &op) {
++          return !op.outvar.has_value() ||
++                 !context_updater.GetRemillReg(*op.outvar).has_value();
++        });
++  };
++
+   auto maybe_ccategory = CoarseCategoryFromFlows(cc);
++
++  // Intra-instruction branches only route control within the instruction's
++  // own p-code, so they do not change where the instruction can exit to.
++  // When they are mixed with exits (e.g. SPARC `restore` in the delay slot of
++  // `ret`, which skips the register-window spill depending on
++  // `DECOMPILE_MODE`), categorize the instruction by its exits alone. The
++  // decoding contexts of the exits are computed linearly, so this is only
++  // done when no context register is written.
++  if (!maybe_ccategory ||
++      *maybe_ccategory != CoarseCategory::kCatNormalWithIntraInstructionFlow) {
++    std::map<size_t, CoarseFlow> exits;
++    for (const auto &[index, flow] : cc) {
++      if (flow.eff != CoarseEffect::kIntraInstruction) {
++        exits.emplace(index, flow);
++      }
++    }
++    if (exits.size() != cc.size() && !exits.empty() && no_context_updates()) {
++      cc = std::move(exits);
++      maybe_ccategory = CoarseCategoryFromFlows(cc);
++    }
++  }
++
+   if (!maybe_ccategory) {
+     DLOG(ERROR) << "No coarse category found";
+     return std::nullopt;
+   }
+-  auto context_updater = BuildContextUpdater(entry_context);
+ 
+   if (*maybe_ccategory == CoarseCategory::kCatNormalWithIntraInstructionFlow) {
+     // our control flow analysis for decoding contexts doesnt handle intraprocedural control flow,
+diff --git a/lib/Arch/Sleigh/SPARC32Arch.cpp b/lib/Arch/Sleigh/SPARC32Arch.cpp
+index 8344770..07a57f5 100644
+--- a/lib/Arch/Sleigh/SPARC32Arch.cpp
++++ b/lib/Arch/Sleigh/SPARC32Arch.cpp
+@@ -21,9 +21,19 @@
+ 
+ namespace remill {
+ 
++// `DECOMPILE_MODE` is a fake register of Ghidra's SPARC specification. When
++// it is 1 (its value in `SparcV9.pspec`), `save` and `restore` only move the
++// in/out registers instead of also spilling and filling the register-window
++// backing store through computed register-space addresses (which remill would
++// lift as memory accesses). It is therefore provided as a decoding-context
++// value of 1 rather than as a `State` register.
++static constexpr const char *kDecompileModeReg = "DECOMPILE_MODE";
++
+ SleighSPARC32Decoder::SleighSPARC32Decoder(const remill::Arch &arch)
+     : SleighDecoder(arch, "SparcV9_32.sla", "SparcV9.pspec",
+-                    sleigh::ContextRegMappings({}, {}),
++                    sleigh::ContextRegMappings(
++                        {{kDecompileModeReg, kDecompileModeReg}},
++                        {{kDecompileModeReg, 1}}),
+                     {}) {}
+ 
+ 
+@@ -72,7 +82,7 @@ bool SPARC32Arch::DecodeInstruction(uint64_t address,
+ }
+ 
+ DecodingContext SPARC32Arch::CreateInitialContext(void) const {
+-  return DecodingContext();
++  return DecodingContext({{kDecompileModeReg, 1u}});
+ }
+ 
+ 
+diff --git a/lib/Arch/Sleigh/SPARC32Base.cpp b/lib/Arch/Sleigh/SPARC32Base.cpp
+index 7f1b101..9312c5d 100644
+--- a/lib/Arch/Sleigh/SPARC32Base.cpp
++++ b/lib/Arch/Sleigh/SPARC32Base.cpp
+@@ -198,57 +198,60 @@ void SPARC32ArchBase::PopulateRegisterTable(void) const {
+   REG(state, FQ24, fpreg.v[6], u128);
+   REG(state, FQ28, fpreg.v[7], u128);
+ 
+-  SUB_REG(state, FS0, fpreg.v[0].floats.elems[0], f32, FQ0);
+-  SUB_REG(state, FS1, fpreg.v[0].floats.elems[1], f32, FQ0);
+-  SUB_REG(state, FS2, fpreg.v[0].floats.elems[2], f32, FQ0);
+-  SUB_REG(state, FS3, fpreg.v[0].floats.elems[3], f32, FQ0);
+-  SUB_REG(state, FS4, fpreg.v[1].floats.elems[0], f32, FQ4);
+-  SUB_REG(state, FS5, fpreg.v[1].floats.elems[1], f32, FQ4);
+-  SUB_REG(state, FS6, fpreg.v[1].floats.elems[2], f32, FQ4);
+-  SUB_REG(state, FS7, fpreg.v[1].floats.elems[3], f32, FQ4);
+-  SUB_REG(state, FS8, fpreg.v[2].floats.elems[0], f32, FQ8);
+-  SUB_REG(state, FS9, fpreg.v[2].floats.elems[1], f32, FQ8);
+-  SUB_REG(state, FS10, fpreg.v[2].floats.elems[2], f32, FQ8);
+-  SUB_REG(state, FS11, fpreg.v[2].floats.elems[3], f32, FQ8);
+-  SUB_REG(state, FS12, fpreg.v[3].floats.elems[0], f32, FQ12);
+-  SUB_REG(state, FS13, fpreg.v[3].floats.elems[1], f32, FQ12);
+-  SUB_REG(state, FS14, fpreg.v[3].floats.elems[2], f32, FQ12);
+-  SUB_REG(state, FS15, fpreg.v[3].floats.elems[3], f32, FQ12);
+-  SUB_REG(state, FS16, fpreg.v[4].floats.elems[0], f32, FQ16);
+-  SUB_REG(state, FS17, fpreg.v[4].floats.elems[1], f32, FQ16);
+-  SUB_REG(state, FS18, fpreg.v[4].floats.elems[2], f32, FQ16);
+-  SUB_REG(state, FS19, fpreg.v[4].floats.elems[3], f32, FQ16);
+-  SUB_REG(state, FS20, fpreg.v[5].floats.elems[0], f32, FQ20);
+-  SUB_REG(state, FS21, fpreg.v[5].floats.elems[1], f32, FQ20);
+-  SUB_REG(state, FS22, fpreg.v[5].floats.elems[2], f32, FQ20);
+-  SUB_REG(state, FS23, fpreg.v[5].floats.elems[3], f32, FQ20);
+-  SUB_REG(state, FS24, fpreg.v[6].floats.elems[0], f32, FQ24);
+-  SUB_REG(state, FS25, fpreg.v[6].floats.elems[1], f32, FQ24);
+-  SUB_REG(state, FS26, fpreg.v[6].floats.elems[2], f32, FQ24);
+-  SUB_REG(state, FS27, fpreg.v[6].floats.elems[3], f32, FQ24);
+-  SUB_REG(state, FS28, fpreg.v[7].floats.elems[0], f32, FQ28);
+-  SUB_REG(state, FS29, fpreg.v[7].floats.elems[1], f32, FQ28);
+-  SUB_REG(state, FS30, fpreg.v[7].floats.elems[2], f32, FQ28);
+-  SUB_REG(state, FS31, fpreg.v[7].floats.elems[3], f32, FQ28);
+-
+-  SUB_REG(state, FD0, fpreg.v[0].doubles.elems[0], f64, FQ0);
+-  SUB_REG(state, FD2, fpreg.v[0].doubles.elems[1], f64, FQ0);
+-  SUB_REG(state, FD4, fpreg.v[1].doubles.elems[0], f64, FQ4);
+-  SUB_REG(state, FD6, fpreg.v[1].doubles.elems[1], f64, FQ4);
+-  SUB_REG(state, FD8, fpreg.v[2].doubles.elems[0], f64, FQ8);
+-  SUB_REG(state, FD10, fpreg.v[2].doubles.elems[1], f64, FQ8);
+-  SUB_REG(state, FD12, fpreg.v[3].doubles.elems[0], f64, FQ12);
+-  SUB_REG(state, FD14, fpreg.v[3].doubles.elems[1], f64, FQ12);
+-  SUB_REG(state, FD16, fpreg.v[4].doubles.elems[0], f64, FQ16);
+-  SUB_REG(state, FD18, fpreg.v[4].doubles.elems[1], f64, FQ16);
+-  SUB_REG(state, FD20, fpreg.v[5].doubles.elems[0], f64, FQ20);
+-  SUB_REG(state, FD22, fpreg.v[5].doubles.elems[1], f64, FQ20);
+-  SUB_REG(state, FD24, fpreg.v[6].doubles.elems[0], f64, FQ24);
+-  SUB_REG(state, FD26, fpreg.v[6].doubles.elems[1], f64, FQ24);
+-  SUB_REG(state, FD28, fpreg.v[7].doubles.elems[0], f64, FQ28);
+-  SUB_REG(state, FD30, fpreg.v[7].doubles.elems[1], f64, FQ28);
+-  
+-  REG(state, DECOMPILE_MODE, decompile_mode, u8);
++  // Ghidra numbers the FP registers big-endian (`fs0` is the high half of
++  // `fd0`, which is the high half of `fq0`), while the state holds
++  // host-order values, so the sub-registers are placed accordingly.
++  SUB_REG(state, FS0, fpreg.v[0].floats.elems[3], f32, FQ0);
++  SUB_REG(state, FS1, fpreg.v[0].floats.elems[2], f32, FQ0);
++  SUB_REG(state, FS2, fpreg.v[0].floats.elems[1], f32, FQ0);
++  SUB_REG(state, FS3, fpreg.v[0].floats.elems[0], f32, FQ0);
++  SUB_REG(state, FS4, fpreg.v[1].floats.elems[3], f32, FQ4);
++  SUB_REG(state, FS5, fpreg.v[1].floats.elems[2], f32, FQ4);
++  SUB_REG(state, FS6, fpreg.v[1].floats.elems[1], f32, FQ4);
++  SUB_REG(state, FS7, fpreg.v[1].floats.elems[0], f32, FQ4);
++  SUB_REG(state, FS8, fpreg.v[2].floats.elems[3], f32, FQ8);
++  SUB_REG(state, FS9, fpreg.v[2].floats.elems[2], f32, FQ8);
++  SUB_REG(state, FS10, fpreg.v[2].floats.elems[1], f32, FQ8);
++  SUB_REG(state, FS11, fpreg.v[2].floats.elems[0], f32, FQ8);
++  SUB_REG(state, FS12, fpreg.v[3].floats.elems[3], f32, FQ12);
++  SUB_REG(state, FS13, fpreg.v[3].floats.elems[2], f32, FQ12);
++  SUB_REG(state, FS14, fpreg.v[3].floats.elems[1], f32, FQ12);
++  SUB_REG(state, FS15, fpreg.v[3].floats.elems[0], f32, FQ12);
++  SUB_REG(state, FS16, fpreg.v[4].floats.elems[3], f32, FQ16);
++  SUB_REG(state, FS17, fpreg.v[4].floats.elems[2], f32, FQ16);
++  SUB_REG(state, FS18, fpreg.v[4].floats.elems[1], f32, FQ16);
++  SUB_REG(state, FS19, fpreg.v[4].floats.elems[0], f32, FQ16);
++  SUB_REG(state, FS20, fpreg.v[5].floats.elems[3], f32, FQ20);
++  SUB_REG(state, FS21, fpreg.v[5].floats.elems[2], f32, FQ20);
++  SUB_REG(state, FS22, fpreg.v[5].floats.elems[1], f32, FQ20);
++  SUB_REG(state, FS23, fpreg.v[5].floats.elems[0], f32, FQ20);
++  SUB_REG(state, FS24, fpreg.v[6].floats.elems[3], f32, FQ24);
++  SUB_REG(state, FS25, fpreg.v[6].floats.elems[2], f32, FQ24);
++  SUB_REG(state, FS26, fpreg.v[6].floats.elems[1], f32, FQ24);
++  SUB_REG(state, FS27, fpreg.v[6].floats.elems[0], f32, FQ24);
++  SUB_REG(state, FS28, fpreg.v[7].floats.elems[3], f32, FQ28);
++  SUB_REG(state, FS29, fpreg.v[7].floats.elems[2], f32, FQ28);
++  SUB_REG(state, FS30, fpreg.v[7].floats.elems[1], f32, FQ28);
++  SUB_REG(state, FS31, fpreg.v[7].floats.elems[0], f32, FQ28);
++  SUB_REG(state, FD0, fpreg.v[0].doubles.elems[1], f64, FQ0);
++  SUB_REG(state, FD2, fpreg.v[0].doubles.elems[0], f64, FQ0);
++  SUB_REG(state, FD4, fpreg.v[1].doubles.elems[1], f64, FQ4);
++  SUB_REG(state, FD6, fpreg.v[1].doubles.elems[0], f64, FQ4);
++  SUB_REG(state, FD8, fpreg.v[2].doubles.elems[1], f64, FQ8);
++  SUB_REG(state, FD10, fpreg.v[2].doubles.elems[0], f64, FQ8);
++  SUB_REG(state, FD12, fpreg.v[3].doubles.elems[1], f64, FQ12);
++  SUB_REG(state, FD14, fpreg.v[3].doubles.elems[0], f64, FQ12);
++  SUB_REG(state, FD16, fpreg.v[4].doubles.elems[1], f64, FQ16);
++  SUB_REG(state, FD18, fpreg.v[4].doubles.elems[0], f64, FQ16);
++  SUB_REG(state, FD20, fpreg.v[5].doubles.elems[1], f64, FQ20);
++  SUB_REG(state, FD22, fpreg.v[5].doubles.elems[0], f64, FQ20);
++  SUB_REG(state, FD24, fpreg.v[6].doubles.elems[1], f64, FQ24);
++  SUB_REG(state, FD26, fpreg.v[6].doubles.elems[0], f64, FQ24);
++  SUB_REG(state, FD28, fpreg.v[7].doubles.elems[1], f64, FQ28);
++  SUB_REG(state, FD30, fpreg.v[7].doubles.elems[0], f64, FQ28);
++
++  // `DECOMPILE_MODE` is a decoding-context value (see SPARC32Arch.cpp), not
++  // a register.
+   REG(state, DIDRESTORE, didrestore, u8);
+ }
+ 
+diff --git a/lib/Arch/Sleigh/SPARC64Arch.cpp b/lib/Arch/Sleigh/SPARC64Arch.cpp
+new file mode 100644
+index 0000000..a944ab2
+--- /dev/null
++++ b/lib/Arch/Sleigh/SPARC64Arch.cpp
+@@ -0,0 +1,375 @@
++/*
++ * Copyright (c) 2026 Trail of Bits, Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include "SPARC64Arch.h"
++
++#include <glog/logging.h>
++#include <llvm/IR/IRBuilder.h>
++#include <llvm/IR/Module.h>
++#include <remill/Arch/Name.h>
++#include <remill/BC/ABI.h>
++#include <remill/BC/InstructionLifter.h>
++#include <remill/BC/Util.h>
++
++// clang-format off
++#include <remill/Arch/SPARC64/Runtime/SleighState.h>
++// clang-format on
++
++namespace remill {
++
++// `DECOMPILE_MODE` is a fake register of Ghidra's SPARC specification. When
++// it is 1 (its value in `SparcV9.pspec`), `save` and `restore` only move the
++// in/out registers instead of also spilling and filling the register-window
++// backing store through computed register-space addresses (which remill would
++// lift as memory accesses). It is therefore provided as a decoding-context
++// value of 1 rather than as a `State` register.
++static constexpr const char *kDecompileModeReg = "DECOMPILE_MODE";
++
++SleighSPARC64Decoder::SleighSPARC64Decoder(const remill::Arch &arch)
++    : SleighDecoder(arch, "SparcV9_64.sla", "SparcV9.pspec",
++                    sleigh::ContextRegMappings(
++                        {{kDecompileModeReg, kDecompileModeReg}},
++                        {{kDecompileModeReg, 1}}),
++                    {}) {}
++
++void SleighSPARC64Decoder::InitializeSleighContext(
++    uint64_t, remill::sleigh::SingleInstructionSleighContext &,
++    const ContextValues &) const {}
++
++llvm::Value *SleighSPARC64Decoder::LiftPcFromCurrPc(
++    llvm::IRBuilder<> &bldr, llvm::Value *curr_pc, size_t,
++    const DecodingContext &) const {
++
++  // Ghidra's SPARC specification reads `inst_start` for the PC.
++  return curr_pc;
++}
++
++SPARC64Arch::SPARC64Arch(llvm::LLVMContext *context_, OSName os_name_,
++                         ArchName arch_name_)
++    : ArchBase(context_, os_name_, arch_name_),
++      decoder(*this) {}
++
++SPARC64Arch::~SPARC64Arch(void) {}
++
++std::string_view SPARC64Arch::StackPointerRegisterName(void) const {
++  return "SP";
++}
++
++std::string_view SPARC64Arch::ProgramCounterRegisterName(void) const {
++  return "PC";
++}
++
++uint64_t SPARC64Arch::MinInstructionAlign(const DecodingContext &) const {
++  return 4;
++}
++
++uint64_t SPARC64Arch::MinInstructionSize(const DecodingContext &) const {
++  return 4;
++}
++
++// A delayed control transfer is decoded together with its delay slot.
++uint64_t SPARC64Arch::MaxInstructionSize(const DecodingContext &,
++                                         bool) const {
++  return 8;
++}
++
++llvm::CallingConv::ID SPARC64Arch::DefaultCallingConv(void) const {
++  return llvm::CallingConv::C;
++}
++
++llvm::Triple SPARC64Arch::Triple(void) const {
++  auto triple = BasicTriple();
++  triple.setArch(llvm::Triple::sparcv9);
++  return triple;
++}
++
++llvm::DataLayout SPARC64Arch::DataLayout(void) const {
++  return llvm::DataLayout("E-m:e-i64:64-n32:64-S128");
++}
++
++bool SPARC64Arch::MemoryAccessIsLittleEndian(void) const {
++  return false;
++}
++
++bool SPARC64Arch::MayHaveDelaySlot(const Instruction &) const {
++  return false;
++}
++
++bool SPARC64Arch::NextInstructionIsDelayed(const Instruction &,
++                                           const Instruction &, bool) const {
++  return false;
++}
++
++// Populate the table of register information. The names are the upper-cased
++// names of Ghidra's `SparcV9_64.sla` registers.
++void SPARC64Arch::PopulateRegisterTable(void) const {
++  reg_by_offset.resize(sizeof(SPARC64SleighState));
++
++  auto u8 = llvm::Type::getInt8Ty(*context);
++  auto u64 = llvm::Type::getInt64Ty(*context);
++  auto u128 = llvm::Type::getInt128Ty(*context);
++  auto f32 = llvm::Type::getFloatTy(*context);
++  auto f64 = llvm::Type::getDoubleTy(*context);
++
++  SPARC64SleighState state;
++
++#define OFFSET_OF(access) \
++  (reinterpret_cast<uintptr_t>(&state.access) - \
++   reinterpret_cast<uintptr_t>(&state))
++
++#define REG(name, access, type) \
++  AddRegister(#name, type, OFFSET_OF(access), nullptr)
++
++#define SUB_REG(name, access, type, parent_reg_name) \
++  AddRegister(#name, type, OFFSET_OF(access), #parent_reg_name)
++
++  REG(PC, pc.qword, u64);
++  REG(NPC, npc.qword, u64);
++  REG(G0, gpr.g0.qword, u64);
++  REG(G1, gpr.g1.qword, u64);
++  REG(G2, gpr.g2.qword, u64);
++  REG(G3, gpr.g3.qword, u64);
++  REG(G4, gpr.g4.qword, u64);
++  REG(G5, gpr.g5.qword, u64);
++  REG(G6, gpr.g6.qword, u64);
++  REG(G7, gpr.g7.qword, u64);
++  REG(O0, gpr.o0.qword, u64);
++  REG(O1, gpr.o1.qword, u64);
++  REG(O2, gpr.o2.qword, u64);
++  REG(O3, gpr.o3.qword, u64);
++  REG(O4, gpr.o4.qword, u64);
++  REG(O5, gpr.o5.qword, u64);
++  REG(SP, gpr.sp.qword, u64);
++  REG(O7, gpr.o7.qword, u64);
++  REG(L0, gpr.l0.qword, u64);
++  REG(L1, gpr.l1.qword, u64);
++  REG(L2, gpr.l2.qword, u64);
++  REG(L3, gpr.l3.qword, u64);
++  REG(L4, gpr.l4.qword, u64);
++  REG(L5, gpr.l5.qword, u64);
++  REG(L6, gpr.l6.qword, u64);
++  REG(L7, gpr.l7.qword, u64);
++  REG(I0, gpr.i0.qword, u64);
++  REG(I1, gpr.i1.qword, u64);
++  REG(I2, gpr.i2.qword, u64);
++  REG(I3, gpr.i3.qword, u64);
++  REG(I4, gpr.i4.qword, u64);
++  REG(I5, gpr.i5.qword, u64);
++  REG(FP, gpr.fp.qword, u64);
++  REG(I7, gpr.i7.qword, u64);
++  REG(TICK, asr.tick.qword, u64);
++  REG(Y, asr.y.qword, u64);
++  REG(CCR, asr.ccr.qword, u64);
++  REG(PCR, asr.pcr.qword, u64);
++  REG(PIC, asr.pic.qword, u64);
++  REG(GSR, asr.gsr.qword, u64);
++  REG(SOFTINT_SET, asr.softint_set.qword, u64);
++  REG(SOFTINT_CLR, asr.softint_clr.qword, u64);
++  REG(SOFTINT, asr.softint.qword, u64);
++  REG(TICK_CMPR, asr.tick_cmpr.qword, u64);
++  REG(STICK, asr.stick.qword, u64);
++  REG(STICK_CMPR, asr.stick_cmpr.qword, u64);
++  REG(FSR, fsr.qword, u64);
++  REG(TPC1, priv.tpc1.qword, u64);
++  REG(TPC2, priv.tpc2.qword, u64);
++  REG(TPC3, priv.tpc3.qword, u64);
++  REG(TPC4, priv.tpc4.qword, u64);
++  REG(TNPC1, priv.tnpc1.qword, u64);
++  REG(TNPC2, priv.tnpc2.qword, u64);
++  REG(TNPC3, priv.tnpc3.qword, u64);
++  REG(TNPC4, priv.tnpc4.qword, u64);
++  REG(TSTATE1, priv.tstate1.qword, u64);
++  REG(TSTATE2, priv.tstate2.qword, u64);
++  REG(TSTATE3, priv.tstate3.qword, u64);
++  REG(TSTATE4, priv.tstate4.qword, u64);
++  REG(TT1, priv.tt1.qword, u64);
++  REG(TT2, priv.tt2.qword, u64);
++  REG(TT3, priv.tt3.qword, u64);
++  REG(TT4, priv.tt4.qword, u64);
++  REG(TCK, priv.tck.qword, u64);
++  REG(TBA, priv.tba.qword, u64);
++  REG(PSTATE, priv.pstate.qword, u64);
++  REG(TL, priv.tl.qword, u64);
++  REG(PIL, priv.pil.qword, u64);
++  REG(CWP, priv.cwp.qword, u64);
++  REG(CANSAVE, priv.cansave.qword, u64);
++  REG(CANRESTORE, priv.canrestore.qword, u64);
++  REG(CLEANWIN, priv.cleanwin.qword, u64);
++  REG(OTHERWIN, priv.otherwin.qword, u64);
++  REG(WSTATE, priv.wstate.qword, u64);
++  REG(FQ, priv.fq.qword, u64);
++  REG(VER, priv.ver.qword, u64);
++  REG(GL, priv.gl.qword, u64);
++  REG(X_NF, flags.x_nf, u8);
++  REG(X_ZF, flags.x_zf, u8);
++  REG(X_VF, flags.x_vf, u8);
++  REG(X_CF, flags.x_cf, u8);
++  REG(I_NF, flags.i_nf, u8);
++  REG(I_ZF, flags.i_zf, u8);
++  REG(I_VF, flags.i_vf, u8);
++  REG(I_CF, flags.i_cf, u8);
++  REG(FCC0, flags.fcc0, u8);
++  REG(FCC1, flags.fcc1, u8);
++  REG(FCC2, flags.fcc2, u8);
++  REG(FCC3, flags.fcc3, u8);
++  REG(ASI, flags.asi, u8);
++  REG(FPRS, flags.fprs, u8);
++  REG(DIDRESTORE, flags.didrestore, u8);
++  REG(FQ0, fpreg.v[0], u128);
++  REG(FQ4, fpreg.v[1], u128);
++  REG(FQ8, fpreg.v[2], u128);
++  REG(FQ12, fpreg.v[3], u128);
++  REG(FQ16, fpreg.v[4], u128);
++  REG(FQ20, fpreg.v[5], u128);
++  REG(FQ24, fpreg.v[6], u128);
++  REG(FQ28, fpreg.v[7], u128);
++  REG(FQ32, fpreg.v[8], u128);
++  REG(FQ36, fpreg.v[9], u128);
++  REG(FQ40, fpreg.v[10], u128);
++  REG(FQ44, fpreg.v[11], u128);
++  REG(FQ48, fpreg.v[12], u128);
++  REG(FQ52, fpreg.v[13], u128);
++  REG(FQ56, fpreg.v[14], u128);
++  REG(FQ60, fpreg.v[15], u128);
++  SUB_REG(FD0, fpreg.v[0].doubles.elems[1], f64, FQ0);
++  SUB_REG(FD2, fpreg.v[0].doubles.elems[0], f64, FQ0);
++  SUB_REG(FD4, fpreg.v[1].doubles.elems[1], f64, FQ4);
++  SUB_REG(FD6, fpreg.v[1].doubles.elems[0], f64, FQ4);
++  SUB_REG(FD8, fpreg.v[2].doubles.elems[1], f64, FQ8);
++  SUB_REG(FD10, fpreg.v[2].doubles.elems[0], f64, FQ8);
++  SUB_REG(FD12, fpreg.v[3].doubles.elems[1], f64, FQ12);
++  SUB_REG(FD14, fpreg.v[3].doubles.elems[0], f64, FQ12);
++  SUB_REG(FD16, fpreg.v[4].doubles.elems[1], f64, FQ16);
++  SUB_REG(FD18, fpreg.v[4].doubles.elems[0], f64, FQ16);
++  SUB_REG(FD20, fpreg.v[5].doubles.elems[1], f64, FQ20);
++  SUB_REG(FD22, fpreg.v[5].doubles.elems[0], f64, FQ20);
++  SUB_REG(FD24, fpreg.v[6].doubles.elems[1], f64, FQ24);
++  SUB_REG(FD26, fpreg.v[6].doubles.elems[0], f64, FQ24);
++  SUB_REG(FD28, fpreg.v[7].doubles.elems[1], f64, FQ28);
++  SUB_REG(FD30, fpreg.v[7].doubles.elems[0], f64, FQ28);
++  SUB_REG(FD32, fpreg.v[8].doubles.elems[1], f64, FQ32);
++  SUB_REG(FD34, fpreg.v[8].doubles.elems[0], f64, FQ32);
++  SUB_REG(FD36, fpreg.v[9].doubles.elems[1], f64, FQ36);
++  SUB_REG(FD38, fpreg.v[9].doubles.elems[0], f64, FQ36);
++  SUB_REG(FD40, fpreg.v[10].doubles.elems[1], f64, FQ40);
++  SUB_REG(FD42, fpreg.v[10].doubles.elems[0], f64, FQ40);
++  SUB_REG(FD44, fpreg.v[11].doubles.elems[1], f64, FQ44);
++  SUB_REG(FD46, fpreg.v[11].doubles.elems[0], f64, FQ44);
++  SUB_REG(FD48, fpreg.v[12].doubles.elems[1], f64, FQ48);
++  SUB_REG(FD50, fpreg.v[12].doubles.elems[0], f64, FQ48);
++  SUB_REG(FD52, fpreg.v[13].doubles.elems[1], f64, FQ52);
++  SUB_REG(FD54, fpreg.v[13].doubles.elems[0], f64, FQ52);
++  SUB_REG(FD56, fpreg.v[14].doubles.elems[1], f64, FQ56);
++  SUB_REG(FD58, fpreg.v[14].doubles.elems[0], f64, FQ56);
++  SUB_REG(FD60, fpreg.v[15].doubles.elems[1], f64, FQ60);
++  SUB_REG(FD62, fpreg.v[15].doubles.elems[0], f64, FQ60);
++  SUB_REG(FS0, fpreg.v[0].floats.elems[3], f32, FD0);
++  SUB_REG(FS1, fpreg.v[0].floats.elems[2], f32, FD0);
++  SUB_REG(FS2, fpreg.v[0].floats.elems[1], f32, FD2);
++  SUB_REG(FS3, fpreg.v[0].floats.elems[0], f32, FD2);
++  SUB_REG(FS4, fpreg.v[1].floats.elems[3], f32, FD4);
++  SUB_REG(FS5, fpreg.v[1].floats.elems[2], f32, FD4);
++  SUB_REG(FS6, fpreg.v[1].floats.elems[1], f32, FD6);
++  SUB_REG(FS7, fpreg.v[1].floats.elems[0], f32, FD6);
++  SUB_REG(FS8, fpreg.v[2].floats.elems[3], f32, FD8);
++  SUB_REG(FS9, fpreg.v[2].floats.elems[2], f32, FD8);
++  SUB_REG(FS10, fpreg.v[2].floats.elems[1], f32, FD10);
++  SUB_REG(FS11, fpreg.v[2].floats.elems[0], f32, FD10);
++  SUB_REG(FS12, fpreg.v[3].floats.elems[3], f32, FD12);
++  SUB_REG(FS13, fpreg.v[3].floats.elems[2], f32, FD12);
++  SUB_REG(FS14, fpreg.v[3].floats.elems[1], f32, FD14);
++  SUB_REG(FS15, fpreg.v[3].floats.elems[0], f32, FD14);
++  SUB_REG(FS16, fpreg.v[4].floats.elems[3], f32, FD16);
++  SUB_REG(FS17, fpreg.v[4].floats.elems[2], f32, FD16);
++  SUB_REG(FS18, fpreg.v[4].floats.elems[1], f32, FD18);
++  SUB_REG(FS19, fpreg.v[4].floats.elems[0], f32, FD18);
++  SUB_REG(FS20, fpreg.v[5].floats.elems[3], f32, FD20);
++  SUB_REG(FS21, fpreg.v[5].floats.elems[2], f32, FD20);
++  SUB_REG(FS22, fpreg.v[5].floats.elems[1], f32, FD22);
++  SUB_REG(FS23, fpreg.v[5].floats.elems[0], f32, FD22);
++  SUB_REG(FS24, fpreg.v[6].floats.elems[3], f32, FD24);
++  SUB_REG(FS25, fpreg.v[6].floats.elems[2], f32, FD24);
++  SUB_REG(FS26, fpreg.v[6].floats.elems[1], f32, FD26);
++  SUB_REG(FS27, fpreg.v[6].floats.elems[0], f32, FD26);
++  SUB_REG(FS28, fpreg.v[7].floats.elems[3], f32, FD28);
++  SUB_REG(FS29, fpreg.v[7].floats.elems[2], f32, FD28);
++  SUB_REG(FS30, fpreg.v[7].floats.elems[1], f32, FD30);
++  SUB_REG(FS31, fpreg.v[7].floats.elems[0], f32, FD30);
++
++#undef SUB_REG
++#undef REG
++#undef OFFSET_OF
++}
++
++// Populate a just-initialized lifted function function with architecture-
++// specific variables.
++void SPARC64Arch::FinishLiftedFunctionInitialization(
++    llvm::Module *module, llvm::Function *bb_func) const {
++  auto &context = module->getContext();
++  auto addr = llvm::Type::getIntNTy(context, address_size);
++
++  const auto entry_block = &bb_func->getEntryBlock();
++  llvm::IRBuilder<> ir(entry_block);
++
++  const auto pc_arg = NthArgument(bb_func, kPCArgNum);
++  const auto state_ptr_arg = NthArgument(bb_func, kStatePointerArgNum);
++
++  ir.CreateStore(pc_arg,
++                 ir.CreateAlloca(addr, nullptr, kNextPCVariableName.data()));
++  ir.CreateStore(
++      pc_arg, ir.CreateAlloca(addr, nullptr, kIgnoreNextPCVariableName.data()));
++
++  ir.CreateStore(pc_arg,
++                 RegisterByName(kPCVariableName)->AddressOf(state_ptr_arg, ir),
++                 false);
++}
++
++DecodingContext SPARC64Arch::CreateInitialContext(void) const {
++  return DecodingContext({{kDecompileModeReg, 1u}});
++}
++
++OperandLifter::OpLifterPtr SPARC64Arch::DefaultLifter(
++    const remill::IntrinsicTable &intrinsics_table) const {
++  return std::make_shared<InstructionLifter>(this, intrinsics_table);
++}
++
++bool SPARC64Arch::DecodeInstruction(uint64_t address,
++                                    std::string_view inst_bytes,
++                                    Instruction &inst,
++                                    DecodingContext context) const {
++  inst.pc = address;
++  inst.next_pc = address + inst_bytes.size();  // Default fall-through.
++  inst.branch_taken_pc = 0;
++  inst.branch_not_taken_pc = 0;
++  inst.has_branch_taken_delay_slot = false;
++  inst.has_branch_not_taken_delay_slot = false;
++  inst.arch_name = arch_name;
++  inst.sub_arch_name = arch_name;
++  inst.branch_taken_arch_name = arch_name;
++  inst.arch = this;
++  inst.category = Instruction::kCategoryInvalid;
++  inst.operands.clear();
++  inst.flows = Instruction::InvalidInsn();
++
++  return this->decoder.DecodeInstruction(address, inst_bytes, inst, context);
++}
++
++Arch::ArchPtr Arch::GetSPARC64Sleigh(llvm::LLVMContext *context_,
++                                     OSName os_name_, ArchName arch_name_) {
++  return std::make_unique<SPARC64Arch>(context_, os_name_, arch_name_);
++}
++
++}  // namespace remill
+diff --git a/lib/Arch/Sleigh/SPARC64Arch.h b/lib/Arch/Sleigh/SPARC64Arch.h
+new file mode 100644
+index 0000000..dafd338
+--- /dev/null
++++ b/lib/Arch/Sleigh/SPARC64Arch.h
+@@ -0,0 +1,83 @@
++/*
++ * Copyright (c) 2026 Trail of Bits, Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#pragma once
++
++#include <remill/Arch/ArchBase.h>
++
++#include "Arch.h"
++
++namespace remill {
++
++// Decodes SPARC V9 (64-bit) code with Ghidra's `SparcV9_64.sla`.
++class SleighSPARC64Decoder final : public remill::sleigh::SleighDecoder {
++ public:
++  explicit SleighSPARC64Decoder(const remill::Arch &arch);
++
++  llvm::Value *LiftPcFromCurrPc(llvm::IRBuilder<> &bldr, llvm::Value *,
++                                size_t curr_insn_size,
++                                const DecodingContext &) const final;
++
++  void
++  InitializeSleighContext(uint64_t addr,
++                          remill::sleigh::SingleInstructionSleighContext &ctxt,
++                          const ContextValues &context_values) const final;
++};
++
++// 64-bit SPARC (SPARC V9) with Sleigh-based semantics (`kArchSparc64_SLEIGH`).
++class SPARC64Arch final : public virtual ArchBase {
++ public:
++  SPARC64Arch(llvm::LLVMContext *context_, OSName os_name_,
++              ArchName arch_name_);
++
++  virtual ~SPARC64Arch(void);
++
++  std::string_view StackPointerRegisterName(void) const final;
++  std::string_view ProgramCounterRegisterName(void) const final;
++
++  uint64_t MinInstructionAlign(const DecodingContext &) const final;
++  uint64_t MinInstructionSize(const DecodingContext &) const final;
++  uint64_t MaxInstructionSize(const DecodingContext &,
++                              bool permit_fuse_idioms) const final;
++
++  llvm::CallingConv::ID DefaultCallingConv(void) const final;
++  llvm::Triple Triple(void) const final;
++  llvm::DataLayout DataLayout(void) const final;
++  bool MemoryAccessIsLittleEndian(void) const final;
++
++  // Delay slots are part of the decoded instruction: Sleigh decodes a
++  // delayed control transfer together with its delay slot instruction.
++  bool MayHaveDelaySlot(const Instruction &inst) const final;
++  bool NextInstructionIsDelayed(const Instruction &inst,
++                                const Instruction &next_inst,
++                                bool branch_taken_path) const final;
++
++  void PopulateRegisterTable(void) const final;
++  void FinishLiftedFunctionInitialization(llvm::Module *module,
++                                          llvm::Function *bb_func) const final;
++
++  DecodingContext CreateInitialContext(void) const final;
++  OperandLifter::OpLifterPtr
++  DefaultLifter(const remill::IntrinsicTable &intrinsics) const final;
++  bool DecodeInstruction(uint64_t address, std::string_view instr_bytes,
++                         Instruction &inst,
++                         DecodingContext context) const final;
++
++ private:
++  SleighSPARC64Decoder decoder;
++};
++
++}  // namespace remill
+-- 
+2.43.0
+

@@ -1,7 +1,0 @@
-# SPARC64 does not work with the current remill: remill::Arch::Build for
-# SPARC64 populates its register table using the register window type, which
-# only exists after a semantics module was loaded, so building the
-# architecture aborts. Every SPARC64 specification therefore fails to load.
-# EXPECT-ERROR: Have you not run `PrepareModule` on a loaded semantics module?
-arch: ARCH_SPARC64
-operating_system: OS_LINUX

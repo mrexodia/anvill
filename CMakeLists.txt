@@ -71,6 +71,36 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/remill/CMakeLists.txt")
 endif()
 set(GFLAGS_USE_TARGET_NAMESPACE ON)
 
+# Patches to remill that anvill needs and that are not upstream yet (see
+# dependencies/patches/README.md). Each one is applied unless it is already
+# applied, so re-configuring is harmless.
+find_package(Git QUIET)
+file(GLOB ANVILL_REMILL_PATCHES "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/patches/remill/*.patch")
+list(SORT ANVILL_REMILL_PATCHES)
+foreach(remill_patch IN LISTS ANVILL_REMILL_PATCHES)
+  if(NOT GIT_FOUND)
+    message(FATAL_ERROR "git is required to apply ${remill_patch}")
+  endif()
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check "${remill_patch}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/remill"
+    RESULT_VARIABLE remill_patch_applied
+    OUTPUT_QUIET ERROR_QUIET
+  )
+  if(NOT remill_patch_applied EQUAL 0)
+    execute_process(
+      COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn "${remill_patch}"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/remill"
+      RESULT_VARIABLE remill_patch_result
+      ERROR_VARIABLE remill_patch_error
+    )
+    if(NOT remill_patch_result EQUAL 0)
+      message(FATAL_ERROR "Failed to apply ${remill_patch} to dependencies/remill:\n${remill_patch_error}")
+    endif()
+    message(STATUS "anvill: applied remill patch ${remill_patch}")
+  endif()
+endforeach()
+
 # The git version watchers (anvill and remill) must not fail the build when
 # the sources are not a git checkout, e.g. in a Docker build context.
 set(GIT_FAIL_IF_NONZERO_EXIT FALSE)

@@ -1,0 +1,101 @@
+@ints i32 (i32, i64, ptr) cc 0
+  abi type: i32 (i32, i64, ptr)
+  calling convention: 0
+  param a: O0 : i32
+  param b: O1 : i64
+  param c: O2 : ptr
+  return: O0 : i32
+  return address: O7 : i64
+  stack pointer on return: SP + 0
+
+@seven_ints i64 (i32, i32, i32, i32, i32, i32, i32, i64) cc 0
+  abi type: i64 (i32, i32, i32, i32, i32, i32, i32, i64)
+  calling convention: 0
+  param param0: O0 : i32
+  param param1: O1 : i32
+  param param2: O2 : i32
+  param param3: O3 : i32
+  param param4: O4 : i32
+  param param5: O5 : i32
+  param g: [SP + 2227] : i32
+  param h: [SP + 2231] : i64
+  return: O0 : i64
+  return address: O7 : i64
+  stack pointer on return: SP + 0
+
+@floats double (float, double, i32, fp128) cc 0
+  abi type: double (float, double, i32, fp128)
+  calling convention: 0
+  param a: FS1 : float
+  param b: FD2 : double
+  param c: O2 : i32
+  param q: FQ8 : fp128
+  return: FD0 : double
+  return address: O7 : i64
+  stack pointer on return: SP + 0
+
+@wide i128 (i32, i128) cc 0
+  abi type: { i64, i64 } (i32, i64, i64)
+  calling convention: 0
+  param a: O0 : i32
+  param b0: O2 : i64
+  param b1: O3 : i64
+  return: O0 : i64
+  return: O1 : i64
+  return address: O7 : i64
+  stack pointer on return: SP + 0
+
+@small_struct { i64, i32 } ({ i64, i32 }, i8) cc 0
+  abi type: { i64, i64 } (i64, i64, i8)
+  calling convention: 0
+  param s0: O0 : i64
+  param s1: O1 : i64
+  param c: O2 : i8
+  return: O0 : i64
+  return: O1 : i64
+  return address: O7 : i64
+  stack pointer on return: SP + 0
+
+@big_struct { i64, i64, i64, i64, i64 } ({ i64, i64, i64 }, i32) cc 0
+  abi type: ptr (ptr, ptr, i32)
+  calling convention: 0
+  param __struct_ret_ptr: O0 : ptr
+  param by_ref: O1 : ptr
+  param x: O2 : i32
+  return: O0 : ptr
+  return address: O7 : i64
+  stack pointer on return: SP + 0
+
+@late_double double (double, double, double, double, double, double, double, double, double, double, double, double, double, double, double, double, double) cc 0
+  abi type: double (double, double, double, double, double, double, double, double, double, double, double, double, double, double, double, double, double)
+  calling convention: 0
+  param param0: FD0 : double
+  param param1: FD2 : double
+  param param2: FD4 : double
+  param param3: FD6 : double
+  param param4: FD8 : double
+  param param5: FD10 : double
+  param param6: FD12 : double
+  param param7: FD14 : double
+  param param8: FD16 : double
+  param param9: FD18 : double
+  param param10: FD20 : double
+  param param11: FD22 : double
+  param param12: FD24 : double
+  param param13: FD26 : double
+  param param14: FD28 : double
+  param param15: FD30 : double
+  param on_stack: [SP + 2303] : double
+  return: FD0 : double
+  return address: O7 : i64
+  stack pointer on return: SP + 0
+
+@sret void (ptr, i32) cc 0
+  abi type: ptr (ptr, i32)
+  calling convention: 0
+  param out: O0 : ptr
+  param x: O1 : i32
+  return: O0 : ptr
+  return address: O7 : i64
+  stack pointer on return: SP + 0
+

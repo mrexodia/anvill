@@ -81,6 +81,7 @@ CallingConvention::CreateCCFromArch(const remill::Arch *arch) {
     case remill::kArchAArch64LittleEndian: return CreateAArch64_C(arch);
 
     case remill::kArchSparc32:
+    case remill::kArchSparc32_SLEIGH:
       if (arch->os_name == remill::kOSLinux ||
           arch->os_name == remill::kOSSolaris) {
         return CreateSPARC32_C(arch);
@@ -89,6 +90,7 @@ CallingConvention::CreateCCFromArch(const remill::Arch *arch) {
       }
 
     case remill::kArchSparc64:
+    case remill::kArchSparc64_SLEIGH:
       if (arch->os_name == remill::kOSLinux ||
           arch->os_name == remill::kOSSolaris) {
         return CreateSPARC64_C(arch);
