@@ -112,9 +112,26 @@ class CrossReferenceFolderImpl {
   MAKE_BINOP_FOLDER(And, &, Merge, NO_WRAP, true)
   MAKE_BINOP_FOLDER(Or, |, Merge, NO_WRAP, true)
   MAKE_BINOP_FOLDER(Xor, ^, Merge, NO_WRAP, true)
-  MAKE_BINOP_FOLDER(Shl, <<, MergeLeft, NO_WRAP, true)
-  MAKE_BINOP_FOLDER(LShr, >>, MergeLeft, NO_WRAP, true)
-  MAKE_BINOP_FOLDER(AShr, >>, MergeLeft, SIGNED_WRAP, true)
+  MAKE_BINOP_FOLDER(ShlImpl, <<, MergeLeft, NO_WRAP, true)
+  MAKE_BINOP_FOLDER(LShrImpl, >>, MergeLeft, NO_WRAP, true)
+  MAKE_BINOP_FOLDER(AShrImpl, >>, MergeLeft, SIGNED_WRAP, true)
+
+  // Shifting by the bit width or more produces poison in LLVM (and is
+  // undefined behavior on the host), so such shifts do not fold.
+#define MAKE_SHIFT_FOLDER(name) \
+  ResolvedCrossReference Fold##name(ResolvedCrossReference lhs_xr, \
+                                    ResolvedCrossReference rhs_xr, \
+                                    uint64_t mask, uint64_t size) { \
+    if (rhs_xr.u.address >= size || rhs_xr.u.address >= 64u) { \
+      return {}; \
+    } \
+    return Fold##name##Impl(lhs_xr, rhs_xr, mask, size); \
+  }
+
+  MAKE_SHIFT_FOLDER(Shl)
+  MAKE_SHIFT_FOLDER(LShr)
+  MAKE_SHIFT_FOLDER(AShr)
+#undef MAKE_SHIFT_FOLDER
   MAKE_BINOP_FOLDER(UDiv, /, MergeLeft, NO_WRAP, false)
   MAKE_BINOP_FOLDER(URem, %, MergeLeft, NO_WRAP, false)
   MAKE_BINOP_FOLDER(SDiv, /, MergeLeft, SIGNED_WRAP, false)
@@ -124,7 +141,7 @@ class CrossReferenceFolderImpl {
   MAKE_BINOP_FOLDER(ICmpUgt, >, Merge, NO_WRAP, true)
   MAKE_BINOP_FOLDER(ICmpUge, >=, Merge, NO_WRAP, true)
   MAKE_BINOP_FOLDER(ICmpUlt, <, Merge, NO_WRAP, true)
-  MAKE_BINOP_FOLDER(ICmpUle, <, Merge, NO_WRAP, true)
+  MAKE_BINOP_FOLDER(ICmpUle, <=, Merge, NO_WRAP, true)
   MAKE_BINOP_FOLDER(ICmpSgt, >, Merge, SIGNED_WRAP, true)
   MAKE_BINOP_FOLDER(ICmpSge, >=, Merge, SIGNED_WRAP, true)
   MAKE_BINOP_FOLDER(ICmpSlt, <, Merge, SIGNED_WRAP, true)
@@ -448,7 +465,7 @@ ResolvedCrossReference
 CrossReferenceFolderImpl::ResolveConstantExpr(llvm::ConstantExpr *ce) {
 
   if (auto maybe_addr = xref_resolver.AddressOfEntity(ce); maybe_addr) {
-    ResolvedCrossReference xr;
+    ResolvedCrossReference xr{};
     xr.u.address = *maybe_addr;
     xr.size = dl.getPointerSizeInBits(0);
     xr.references_entity = true;
@@ -602,22 +619,25 @@ CrossReferenceFolderImpl::ResolveConstantExpr(llvm::ConstantExpr *ce) {
 ResolvedCrossReference
 CrossReferenceFolderImpl::ResolveCall(llvm::CallInst *call) {
   switch (call->getIntrinsicID()) {
-    case llvm::Intrinsic::ctlz: {
-      auto xr = ResolveValue(call->getArgOperand(0));
-      xr.u.address = __builtin_clzl(xr.u.address);
-      xr.size = call->getType()->getPrimitiveSizeInBits();
-      return xr;
-    }
-    case llvm::Intrinsic::cttz: {
-      auto xr = ResolveValue(call->getArgOperand(0));
-      xr.u.address = __builtin_ctzl(xr.u.address);
-      xr.size = call->getType()->getPrimitiveSizeInBits();
-      return xr;
-    }
+    // Bit counting is done on the operand's width (not on 64 bits); a zero
+    // input counts as the full width.
+    case llvm::Intrinsic::ctlz:
+    case llvm::Intrinsic::cttz:
     case llvm::Intrinsic::ctpop: {
       auto xr = ResolveValue(call->getArgOperand(0));
-      xr.u.address = __builtin_popcountl(xr.u.address);
-      xr.size = call->getType()->getPrimitiveSizeInBits();
+      const auto width = call->getType()->getPrimitiveSizeInBits();
+      if (!xr.is_valid || width == 0u || width > 64u) {
+        return {};
+      }
+      llvm::APInt val(static_cast<unsigned>(width),
+                      xr.u.address & (width == 64u ? ~0ull
+                                                   : ((1ull << width) - 1u)));
+      switch (call->getIntrinsicID()) {
+        case llvm::Intrinsic::ctlz: xr.u.address = val.countl_zero(); break;
+        case llvm::Intrinsic::cttz: xr.u.address = val.countr_zero(); break;
+        default: xr.u.address = val.popcount(); break;
+      }
+      xr.size = width;
       return xr;
     }
 
@@ -715,13 +735,11 @@ ResolvedCrossReference::Displacement(const llvm::DataLayout &dl) const {
 
   CHECK_NE(size, 0) << "Reference size should not be zero!";
 
-  switch (std::min(size, dl.getPointerSizeInBits(0))) {
-    case 8: displacement = static_cast<std::int8_t>(u.displacement); break;
-    case 16: displacement = static_cast<std::int16_t>(u.displacement); break;
-    case 32: displacement = static_cast<std::int32_t>(u.displacement); break;
-    case 64: displacement = u.displacement; break;
-  }
-
+  // Sign-extend the low `bits` bits (any width from 1 to 64).
+  const auto bits = std::min<unsigned>(
+      std::min<unsigned>(size, dl.getPointerSizeInBits(0)), 64u);
+  const auto shift = 64u - bits;
+  displacement = static_cast<std::int64_t>(u.address << shift) >> shift;
   return displacement;
 }
 
