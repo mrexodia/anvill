@@ -1,0 +1,17 @@
+# CALLING_CONVENTION_CDECL (1) is not an LLVM calling convention ID; it maps
+# to the C calling convention (0). Previously the function was declared with
+# the invalid calling convention `cc 1`.
+#   401000: c3   ret
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+    calling_convention: CALLING_CONVENTION_CDECL
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\xc3" }
+symbols { name: "cdecl_func" address: 0x401000 }

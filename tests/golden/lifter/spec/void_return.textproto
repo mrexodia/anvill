@@ -1,0 +1,15 @@
+# A void prototype may omit `return` entirely (previously the loader required
+# `return { type { base: BT_VOID } }` and silently skipped the function).
+#   401000: c3   ret
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\xc3" }
+symbols { name: "nothing" address: 0x401000 }

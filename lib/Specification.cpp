@@ -112,10 +112,11 @@ SpecificationImpl::ParseSpecification(
     if (!maybe_var.Succeeded()) {
       auto err = maybe_var.Error();
       dec_err.push_back(err);
+      continue;
     }
     auto var_obj = maybe_var.Value();
     auto var_address = var_obj.address;
-    if (address_to_function.count(var_address)) {
+    if (address_to_var.count(var_address)) {
       std::stringstream ss;
       ss << "Duplicate variable for address " << std::hex << var_address;
       return ss.str();
@@ -171,10 +172,6 @@ SpecificationImpl::ParseSpecification(
     }
   }
 
-  if (!spec.has_overrides()) {
-    return {"Spec has no control flow overrides"};
-  }
-
   for (auto &jump : spec.overrides().jumps()) {
     Jump jmp{};
     jmp.stop = jump.stop();
@@ -191,7 +188,12 @@ SpecificationImpl::ParseSpecification(
         [](const auto &a, const auto &b) { return a.address < b.address; });
     jumps.push_back(jmp);
     const auto res = control_flow_overrides.emplace(jmp.address, jmp);
-    CHECK(res.second);
+    if (!res.second) {
+      std::stringstream ss;
+      ss << "Multiple control-flow overrides for address " << std::hex
+         << jmp.address;
+      return ss.str();
+    }
   }
   std::sort(jumps.begin(), jumps.end(),
             [](const auto &a, const auto &b) { return a.address < b.address; });
@@ -209,7 +211,12 @@ SpecificationImpl::ParseSpecification(
     callspec.is_tailcall = call.is_tailcall();
     calls.push_back(callspec);
     const auto res = control_flow_overrides.emplace(callspec.address, callspec);
-    CHECK(res.second);
+    if (!res.second) {
+      std::stringstream ss;
+      ss << "Multiple control-flow overrides for address " << std::hex
+         << callspec.address;
+      return ss.str();
+    }
   }
   std::sort(calls.begin(), calls.end(),
             [](const auto &a, const auto &b) { return a.address < b.address; });
@@ -220,7 +227,12 @@ SpecificationImpl::ParseSpecification(
     overr.address = ret.address();
     returns.push_back(overr);
     const auto res = control_flow_overrides.emplace(overr.address, overr);
-    CHECK(res.second);
+    if (!res.second) {
+      std::stringstream ss;
+      ss << "Multiple control-flow overrides for address " << std::hex
+         << overr.address;
+      return ss.str();
+    }
   }
   std::sort(returns.begin(), returns.end(),
             [](const auto &a, const auto &b) { return a.address < b.address; });
@@ -231,7 +243,12 @@ SpecificationImpl::ParseSpecification(
     overr.address = misc.address();
     misc_overrides.push_back(overr);
     const auto res = control_flow_overrides.emplace(overr.address, overr);
-    CHECK(res.second);
+    if (!res.second) {
+      std::stringstream ss;
+      ss << "Multiple control-flow overrides for address " << std::hex
+         << overr.address;
+      return ss.str();
+    }
   }
   std::sort(misc_overrides.begin(), misc_overrides.end(),
             [](const auto &a, const auto &b) { return a.address < b.address; });
@@ -413,12 +430,23 @@ Specification::VariableAt(std::uint64_t address) const {
 // Return the global variable containing `address`, or an empty `shared_ptr`.
 std::shared_ptr<const VariableDecl>
 Specification::VariableContaining(std::uint64_t address) const {
-  auto it = impl->address_to_var.find(address);
-  if (it != impl->address_to_var.end()) {
-    return std::shared_ptr<const VariableDecl>(impl, it->second);
-  } else {
+  // `variables` is sorted by address; find the last variable starting at or
+  // before `address` and check that it covers `address`.
+  auto &vars = impl->variables;
+  auto it = std::upper_bound(
+      vars.begin(), vars.end(), address,
+      [](std::uint64_t addr, const SpecificationImpl::VariableDeclPtr &var) {
+        return addr < var->address;
+      });
+  if (it == vars.begin()) {
     return {};
   }
+  const VariableDecl *var = (--it)->get();
+  const auto size = impl->arch->DataLayout().getTypeAllocSize(var->type);
+  if (address < var->address + size) {
+    return std::shared_ptr<const VariableDecl>(impl, var);
+  }
+  return {};
 }
 
 // Call `cb` on each symbol in the spec, until `cb` returns `false`.

@@ -1,0 +1,9 @@
+# Two control-flow overrides for the same address are rejected (previously a
+# CHECK failure that aborted the process).
+# EXPECT-ERROR: Multiple control-flow overrides for address 401000
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+overrides {
+  returns { address: 0x401000 }
+  others { address: 0x401000 }
+}

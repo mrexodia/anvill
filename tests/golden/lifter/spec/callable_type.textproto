@@ -1,0 +1,24 @@
+# Prototype given as a C-level function type (`callable.type`) instead of
+# explicit locations: the calling-convention allocator places the arguments.
+# Function types in TypeSpecs previously never decoded, so this function was
+# skipped.
+#   int add(int a, int b) { return a + b; }
+#   401000: 8d 04 37   lea eax, [rdi + rsi]
+#   401003: c3         ret
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    type {
+      function {
+        return_type { base: BT_I32 }
+        arguments { base: BT_I32 }
+        arguments { base: BT_I32 }
+      }
+    }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x8d\x04\x37\xc3" }
+symbols { name: "add" address: 0x401000 }

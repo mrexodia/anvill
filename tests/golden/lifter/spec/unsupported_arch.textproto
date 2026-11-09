@@ -1,0 +1,3 @@
+# The architecture must be specified.
+# EXPECT-ERROR: Invalid/unrecognized architecture
+operating_system: OS_LINUX

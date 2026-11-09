@@ -175,7 +175,7 @@ class Specification {
   }
 
   inline bool operator!=(const Specification &that) const noexcept {
-    return impl.get() == that.impl.get();
+    return impl.get() != that.impl.get();
   }
 };
 
