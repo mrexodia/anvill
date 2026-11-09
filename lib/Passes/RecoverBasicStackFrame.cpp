@@ -212,8 +212,12 @@ static llvm::StructType *GenerateStackFrameType(
     return stack_frame_type;
   }
 
-  // Generate the stack frame using an array of address-sized elements.
-  auto arr_type = llvm::ArrayType::get(el_type, num_slots);
+  // Generate the stack frame using an array of word-sized elements. (The
+  // array used to have `num_slots` elements, i.e. one per address-sized
+  // slot, so with a word size smaller than the address size the frame was
+  // too small: 40 bytes of 1-byte words gave `[5 x i8]`.)
+  auto arr_type =
+      llvm::ArrayType::get(el_type, stack_frame_size / element_size);
 
   llvm::Type *stack_frame_types[] = {arr_type};
   return llvm::StructType::create(stack_frame_types, stack_frame_type_name);

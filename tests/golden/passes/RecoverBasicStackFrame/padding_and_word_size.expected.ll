@@ -2,7 +2,7 @@ source_filename = "padding_and_word_size.ll"
 target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-pc-linux-gnu-elf"
 
-%sub_401000__AI_B_0.frame_type = type { [5 x i8] }
+%sub_401000__AI_B_0.frame_type = type { [40 x i8] }
 
 @__anvill_sp = external global i8
 @__anvill_ra = external global i8
