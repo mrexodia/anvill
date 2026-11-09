@@ -1,0 +1,15 @@
+# Bytes that do not decode (here `06`, invalid in 64-bit mode) end the block
+# with `__remill_error`.
+#   401000: 06   (invalid)
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x06" }
+symbols { name: "garbage" address: 0x401000 }

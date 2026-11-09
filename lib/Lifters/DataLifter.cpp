@@ -56,7 +56,7 @@ llvm::Constant *DataLifter::GetOrDeclareData(const VariableDecl &decl,
       } else if (auto ce = llvm::dyn_cast<llvm::ConstantExpr>(v)) {
         auto ce_type = llvm::dyn_cast<llvm::PointerType>(ce->getType());
         CHECK_NOTNULL(ce_type);
-        found_by_address = ga;
+        found_by_address = ce;
       }
     }
   });

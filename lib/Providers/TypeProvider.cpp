@@ -132,12 +132,13 @@ SpecificationTypeProvider::TryGetFunctionType(uint64_t address) const {
 std::optional<anvill::VariableDecl>
 SpecificationTypeProvider::TryGetVariableType(uint64_t address,
                                               llvm::Type *) const {
-  auto var_it = impl->address_to_var.find(address);
-  if (var_it != impl->address_to_var.end()) {
-    return *(var_it->second);
-  } else {
-    return std::nullopt;
+  // Return the variable containing `address` (not only one starting there),
+  // so that pointers into the middle of a variable can be lifted as offsets
+  // from the variable.
+  if (auto var = impl->VariableContaining(address)) {
+    return *var;
   }
+  return std::nullopt;
 }
 
 // Try to return the type of a function that has been called from `from_isnt`.
@@ -151,12 +152,8 @@ DefaultCallableTypeProvider::TryGetCalledFunctionType(
   }
 
 
-  auto maybe_func_type =
-      ProxyTypeProvider::TryGetFunctionType(function_address);
-  if (maybe_func_type.has_value()) {
-    return maybe_func_type;
-  }
-
+  // NOTE: `function_address` is the function containing the call, not the
+  //       callee, so its own type must not be used for the call.
   if (auto arch_decl = impl->TryGetDeclForArch(from_inst.arch_name)) {
     return *arch_decl;
   }

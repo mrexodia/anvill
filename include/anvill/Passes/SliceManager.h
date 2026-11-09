@@ -101,12 +101,12 @@ class SliceManager {
                              llvm::ArrayRef<llvm::Value *> arguments,
                              llvm::Value *returnVal);
 
-  bool replaceGVsInUser(
-      llvm::User *user,
-      llvm::DenseMap<llvm::Constant *, llvm::Constant *> &to_replace);
-
-  bool handleGV(llvm::GlobalVariable *gv, llvm::User *user,
-                llvm::DenseMap<llvm::Constant *, llvm::Constant *> &to_replace);
+  // Returns an interpretable version of `constant` (with global variable
+  // addresses replaced by concrete integers), or `nullptr` if that is not
+  // possible.
+  llvm::Constant *makeInterpretable(
+      llvm::Constant *constant,
+      llvm::DenseMap<llvm::Constant *, llvm::Constant *> &cache);
 
   // returns true if succesful
   bool replaceAllGVConstantsWithInterpretableValue(

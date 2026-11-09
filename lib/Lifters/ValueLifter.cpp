@@ -32,7 +32,7 @@ llvm::APInt ValueLifterImpl::ConsumeBytesAsInt(std::string_view &data,
   llvm::APInt result(num_bytes * 8u, 0u);
   for (auto i = 0u; i < num_bytes; ++i) {
     result <<= 8u;
-    result |= data[i];
+    result |= static_cast<uint8_t>(data[i]);
   }
   data = data.substr(num_bytes);
 
@@ -388,7 +388,8 @@ llvm::Constant *ValueLifter::Lift(std::string_view data,
 // known or plausible entity, and a `nullptr` otherwise.
 llvm::Constant *ValueLifter::Lift(uint64_t ea, llvm::Type *value_type,
                                   unsigned address_space) const {
-  return impl->value_lifter.GetPointer(ea, value_type, *impl, address_space);
+  return impl->value_lifter.GetPointer(ea, value_type, *impl,
+                                       /*loc_ea=*/0, address_space);
 }
 
 }  // namespace anvill

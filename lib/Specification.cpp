@@ -427,23 +427,31 @@ Specification::VariableAt(std::uint64_t address) const {
   return {};
 }
 
+// Return the variable whose bytes include `address`, or `nullptr`.
+const VariableDecl *
+SpecificationImpl::VariableContaining(std::uint64_t address) const {
+  // `variables` is sorted by address; find the last variable starting at or
+  // before `address` and check that it covers `address`.
+  auto it = std::upper_bound(
+      variables.begin(), variables.end(), address,
+      [](std::uint64_t addr, const VariableDeclPtr &var) {
+        return addr < var->address;
+      });
+  if (it == variables.begin()) {
+    return nullptr;
+  }
+  const VariableDecl *var = (--it)->get();
+  const auto size = arch->DataLayout().getTypeAllocSize(var->type);
+  if (address < var->address + size) {
+    return var;
+  }
+  return nullptr;
+}
+
 // Return the global variable containing `address`, or an empty `shared_ptr`.
 std::shared_ptr<const VariableDecl>
 Specification::VariableContaining(std::uint64_t address) const {
-  // `variables` is sorted by address; find the last variable starting at or
-  // before `address` and check that it covers `address`.
-  auto &vars = impl->variables;
-  auto it = std::upper_bound(
-      vars.begin(), vars.end(), address,
-      [](std::uint64_t addr, const SpecificationImpl::VariableDeclPtr &var) {
-        return addr < var->address;
-      });
-  if (it == vars.begin()) {
-    return {};
-  }
-  const VariableDecl *var = (--it)->get();
-  const auto size = impl->arch->DataLayout().getTypeAllocSize(var->type);
-  if (address < var->address + size) {
+  if (auto var = impl->VariableContaining(address)) {
     return std::shared_ptr<const VariableDecl>(impl, var);
   }
   return {};

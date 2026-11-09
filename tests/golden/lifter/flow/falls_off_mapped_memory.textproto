@@ -1,0 +1,17 @@
+# Execution falls through to an address with no bytes in the specification:
+# the decode fails and the block ends with `__remill_error`.
+#   401000: 89 f8 movl %edi, %eax
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+    parameters { name: "x" repr_var { values { reg { register_name: "EDI" } } type { base: BT_I32 } } }
+    return { values { reg { register_name: "EAX" } } type { base: BT_I32 } }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x89\xf8" }
+symbols { name: "truncated" address: 0x401000 }

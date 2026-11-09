@@ -1,0 +1,19 @@
+# FUNCTION_LINKAGE_DECL: the function is declared with its prototype but its
+# bytes are not lifted.
+#   401000: 8d 47 01   lea eax, [rdi + 1]
+#   401003: c3         ret
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  func_linkage: FUNCTION_LINKAGE_DECL
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+    parameters { name: "x" repr_var { values { reg { register_name: "EDI" } } type { base: BT_I32 } } }
+    return { values { reg { register_name: "EAX" } } type { base: BT_I32 } }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x8d\x47\x01\xc3" }
+symbols { name: "declared" address: 0x401000 }

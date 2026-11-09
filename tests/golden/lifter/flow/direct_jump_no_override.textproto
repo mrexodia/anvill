@@ -1,0 +1,21 @@
+# A direct jump without a control-flow override goes to the decoded target
+# (previously a fatal error: every direct jump needed a Jump override). The
+# skipped `ud2` is never lifted.
+#   401000: eb 02 jmp 0x401004 <.text+0x4>
+#   401002: 0f 0b ud2
+#   401004: 8d 47 02 leal 0x2(%rdi), %eax
+#   401007: c3 retq
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+    parameters { name: "x" repr_var { values { reg { register_name: "EDI" } } type { base: BT_I32 } } }
+    return { values { reg { register_name: "EAX" } } type { base: BT_I32 } }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\xeb\x02\x0f\x0b\x8d\x47\x02\xc3" }
+symbols { name: "skip" address: 0x401000 }

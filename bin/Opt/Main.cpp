@@ -28,6 +28,7 @@
 
 #include <anvill/CrossReferenceResolver.h>
 #include <anvill/Lifters.h>
+#include <anvill/Optimize.h>
 #include <anvill/Passes/BranchAnalysis.h>
 #include <anvill/Passes/CodeQualityStatCollector.h>
 #include <anvill/Passes/JumpTableAnalysis.h>
@@ -288,6 +289,25 @@ int main(int argc, char *argv[]) {
   fam.registerPass([&] { return anvill::BranchAnalysis(); });
   fam.registerPass([&] { return anvill::JumpTableAnalysis(lifter); });
   pb.crossRegisterProxies(lam, fam, cam, mam);
+
+  // `--passes=OptimizeModule` runs anvill's whole optimization pipeline
+  // (anvill::OptimizeModule) on the module instead of individual passes.
+  if (FLAGS_passes == "OptimizeModule") {
+    anvill::OptimizeModule(lifter, *module);
+    fam.clear();
+    mam.clear();
+    cam.clear();
+    lam.clear();
+    std::error_code ec;
+    llvm::raw_fd_ostream os(FLAGS_o, ec);
+    if (ec) {
+      std::cerr << "Unable to open " << FLAGS_o << ": " << ec.message()
+                << "\n";
+      return EXIT_FAILURE;
+    }
+    module->print(os, nullptr);
+    return EXIT_SUCCESS;
+  }
 
   llvm::FunctionPassManager fpm;
   std::stringstream ss(FLAGS_passes);

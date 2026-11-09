@@ -1,0 +1,58 @@
+# A switch compiled to a jump table. The Jump override lists the four case
+# targets of the `jmp rax`; the lifter emits a call to
+# `__anvill_complete_switch` and a `switch` on its result, and the
+# optimization pipeline (JumpTableAnalysis + LowerSwitchIntrinsics) reads the
+# table from memory and turns it into a `switch` on the original index.
+#   int f(unsigned x) { switch (x) { case 0: return 100; case 1: return 200;
+#                                    case 2: return 300; case 3: return 400; }
+#                      return -1; }
+#   401000: 83 ff 03 cmpl $0x3, %edi
+#   401003: 77 2a ja 0x40102f <.text+0x2f>
+#   401005: 89 ff movl %edi, %edi
+#   401007: 48 8d 0d 2a 00 00 00 leaq 0x2a(%rip), %rcx # 0x401038 <.text+0x38>
+#   40100e: 48 63 04 b9 movslq (%rcx,%rdi,4), %rax
+#   401012: 48 01 c8 addq %rcx, %rax
+#   401015: ff e0 jmpq *%rax
+#   401017: b8 64 00 00 00 movl $0x64, %eax
+#   40101c: c3 retq
+#   40101d: b8 c8 00 00 00 movl $0xc8, %eax
+#   401022: c3 retq
+#   401023: b8 2c 01 00 00 movl $0x12c, %eax # imm = 0x12C
+#   401028: c3 retq
+#   401029: b8 90 01 00 00 movl $0x190, %eax # imm = 0x190
+#   40102e: c3 retq
+#   40102f: b8 ff ff ff ff movl $0xffffffff, %eax # imm = 0xFFFFFFFF
+#   401034: c3 retq
+#   401035: 0f 1f 00 nopl (%rax)
+#   401038: df ff <unknown>
+#   40103a: ff ff <unknown>
+#   40103c: e5 ff inl $0xff, %eax
+#   40103e: ff ff <unknown>
+#   401040: eb ff jmp 0x401041 <.text+0x41>
+#   401042: ff ff <unknown>
+#   401044: f1 <unknown>
+#   401045: ff ff <unknown>
+#   401047: ff <unknown>
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+    parameters { name: "x" repr_var { values { reg { register_name: "EDI" } } type { base: BT_U32 } } }
+    return { values { reg { register_name: "EAX" } } type { base: BT_I32 } }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x83\xff\x03\x77\x2a\x89\xff\x48\x8d\x0d\x2a\x00\x00\x00\x48\x63\x04\xb9\x48\x01\xc8\xff\xe0\xb8\x64\x00\x00\x00\xc3\xb8\xc8\x00\x00\x00\xc3\xb8\x2c\x01\x00\x00\xc3\xb8\x90\x01\x00\x00\xc3\xb8\xff\xff\xff\xff\xc3\x0f\x1f\x00\xdf\xff\xff\xff\xe5\xff\xff\xff\xeb\xff\xff\xff\xf1\xff\xff\xff" }
+overrides {
+  jumps {
+    address: 0x401015
+    targets { address: 0x401017 }
+    targets { address: 0x40101d }
+    targets { address: 0x401023 }
+    targets { address: 0x401029 }
+  }
+}
+symbols { name: "table_switch" address: 0x401000 }

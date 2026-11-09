@@ -6,7 +6,8 @@ expected outputs are the *actual* output of the current implementation, so
 together they form an executable specification of anvill's behavior.
 
 Pass cases (`passes/**/<name>.ll`)
-    The first lines may contain `; RUN: <anvill-opt flags>`, e.g.
+    The first lines may contain `; RUN: <anvill-opt flags>` (`%S` expands to
+    the directory of the test case), e.g.
     `; RUN: --passes=RecoverBasicStackFrame --stack_init=zeroes`. The
     transformed module is compared with `<name>.expected.ll`.
 
@@ -73,10 +74,15 @@ def run(cmd):
                           text=True)
 
 
-def run_pass_case(args, path, tmp):
+def run_flags(path, prefix):
     flags = []
-    for value in header_values(path, "; RUN:"):
-        flags.extend(shlex.split(value))
+    for value in header_values(path, prefix):
+        flags.extend(shlex.split(value.replace("%S", str(path.parent))))
+    return flags
+
+
+def run_pass_case(args, path, tmp):
+    flags = run_flags(path, "; RUN:")
     out = tmp / "out.ll"
     proc = run([args.anvill_opt, *flags, str(path), "-o", str(out)])
     if proc.returncode != 0:
@@ -87,9 +93,7 @@ def run_pass_case(args, path, tmp):
 
 
 def run_lifter_case(args, path, tmp):
-    flags = []
-    for value in header_values(path, "# RUN:"):
-        flags.extend(shlex.split(value))
+    flags = run_flags(path, "# RUN:")
     errors = header_values(path, "# EXPECT-ERROR:")
     pre, post = tmp / "pre.ll", tmp / "post.ll"
     proc = run([args.anvill_decompile_spec, "--spec", str(path),

@@ -1,0 +1,17 @@
+# Integer initializers are read from the memory bytes in the architecture's
+# endianness. Bytes >= 0x80 used to be sign-extended while being assembled,
+# corrupting every earlier byte: 0x8001 (bytes 01 80) was lifted as 0x80ff.
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+global_variables { address: 0x404000 type { base: BT_U16 } }
+global_variables { address: 0x404004 type { base: BT_U32 } }
+global_variables { address: 0x404008 type { base: BT_I64 } }
+global_variables { address: 0x404010 type { base: BT_U8 } }
+global_variables { address: 0x404018 type { array { base { base: BT_U16 } size: 3 } } }
+memory_ranges { address: 0x404000 is_writeable: true values: "\x01\x80\x00\x00\xff\x00\x80\x01\xfe\xff\xff\xff\xff\xff\xff\xff\xc8\x00\x00\x00\x00\x00\x00\x00\xff\xff\x00\x80\x34\x12" }
+symbols { name: "u16_8001" address: 0x404000 }
+symbols { name: "u32_018000ff" address: 0x404004 }
+symbols { name: "i64_minus_2" address: 0x404008 }
+symbols { name: "u8_200" address: 0x404010 }
+symbols { name: "u16_array" address: 0x404018 }

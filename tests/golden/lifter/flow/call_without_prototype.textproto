@@ -1,0 +1,17 @@
+# A call to an address with no function declaration and no call-site
+# prototype is lifted as `__remill_function_call` (logged as missing type
+# information); lifting continues at the return address.
+#   401000: e8 fb 0f 00 00 callq 0x402000 <.text+0x1000>
+#   401005: c3 retq
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\xe8\xfb\x0f\x00\x00\xc3" }
+symbols { name: "untyped_call" address: 0x401000 }

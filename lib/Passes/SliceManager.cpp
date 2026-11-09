@@ -68,68 +68,81 @@ void SliceManager::insertClonedSliceIntoFunction(
   return;
 }
 
-bool SliceManager::handleGV(
-    llvm::GlobalVariable *constant, llvm::User *user,
-    llvm::DenseMap<llvm::Constant *, llvm::Constant *> &to_replace) {
-
-  if (to_replace.find(llvm::cast<llvm::Constant>(user)) != to_replace.end()) {
-    return true;
+// Rebuild `constant` such that it can be evaluated by the slice interpreter:
+// `ptrtoint` of a global variable is replaced by the address of that global
+// (`__anvill_pc` is the image base, i.e. zero; other globals need a known
+// entity address). Global variables with an initializer are left alone.
+//
+// NOTE: Constants are uniqued per LLVMContext, so they must never be mutated
+//       in place (e.g. with `replaceAllUsesWith`), as that would also change
+//       the function being analyzed. Only the operands of the cloned slice
+//       instructions are rewritten.
+llvm::Constant *SliceManager::makeInterpretable(
+    llvm::Constant *constant,
+    llvm::DenseMap<llvm::Constant *, llvm::Constant *> &cache) {
+  if (auto it = cache.find(constant); it != cache.end()) {
+    return it->second;
   }
 
-  if (!constant->hasInitializer()) {
-    if (auto *castIn = llvm::dyn_cast<llvm::PtrToIntOperator>(user)) {
-      if (this->lifter.has_value()) {
-        if (auto addr = this->lifter->get().AddressOfEntity(constant)) {
-          auto intType = llvm::cast<llvm::IntegerType>(castIn->getType());
-          to_replace.insert({llvm::cast<llvm::Constant>(castIn),
-                             llvm::ConstantInt::get(intType, *addr)});
-
-          return true;
-        }
-      }
+  llvm::Constant *result = constant;
+  if (auto gv = llvm::dyn_cast<llvm::GlobalVariable>(constant)) {
+    if (!gv->hasInitializer()) {
+      result = nullptr;
     }
 
-    return false;
-  }
+  } else if (auto ptoi = llvm::dyn_cast<llvm::PtrToIntOperator>(constant);
+             ptoi && llvm::isa<llvm::GlobalVariable>(
+                         ptoi->getPointerOperand()->stripPointerCasts())) {
+    auto gv = llvm::cast<llvm::GlobalVariable>(
+        ptoi->getPointerOperand()->stripPointerCasts());
+    auto int_type = llvm::cast<llvm::IntegerType>(ptoi->getType());
+    if (gv->getName() == ::anvill::kSymbolicPCName) {
+      result = llvm::ConstantInt::get(int_type, 0);
+    } else if (std::optional<uint64_t> addr;
+               this->lifter.has_value() &&
+               (addr = this->lifter->get().AddressOfEntity(gv))) {
+      result = llvm::ConstantInt::get(int_type, *addr);
+    } else if (!gv->hasInitializer()) {
+      result = nullptr;
+    }
 
-  return true;
-}
-
-bool SliceManager::replaceGVsInUser(
-    llvm::User *user,
-    llvm::DenseMap<llvm::Constant *, llvm::Constant *> &to_replace) {
-  auto UE = user->op_end();
-  for (auto UI = user->op_begin(); UI != UE; UI++) {
-    if (auto *constant = llvm::dyn_cast<llvm::GlobalVariable>(UI->get())) {
-      if (!this->handleGV(constant, UI->getUser(), to_replace)) {
-        return false;
+  } else if (auto ce = llvm::dyn_cast<llvm::ConstantExpr>(constant)) {
+    llvm::SmallVector<llvm::Constant *, 4> new_ops;
+    bool changed = false;
+    for (auto &op : ce->operands()) {
+      auto new_op = makeInterpretable(llvm::cast<llvm::Constant>(op), cache);
+      if (!new_op) {
+        result = nullptr;
+        break;
       }
-    } else if (auto *CE = llvm::dyn_cast<llvm::ConstantExpr>(UI->get())) {
-      if (!this->replaceGVsInUser(CE, to_replace)) {
-        return false;
-      }
+      changed = changed || new_op != op;
+      new_ops.push_back(new_op);
+    }
+    if (result && changed) {
+      result = ce->getWithOperands(new_ops);
     }
   }
 
-  return true;
+  cache.insert({constant, result});
+  return result;
 }
 
 bool SliceManager::replaceAllGVConstantsWithInterpretableValue(
     llvm::ArrayRef<llvm::Instruction *> insns) {
-
-  llvm::DenseMap<llvm::Constant *, llvm::Constant *> remapper;
+  llvm::DenseMap<llvm::Constant *, llvm::Constant *> cache;
   for (auto insn : insns) {
-    if (!this->replaceGVsInUser(insn, remapper)) {
-      return false;
+    for (auto &op : insn->operands()) {
+      if (auto constant = llvm::dyn_cast<llvm::Constant>(op.get())) {
+        auto new_constant = makeInterpretable(constant, cache);
+        if (!new_constant) {
+          return false;
+        }
+        if (new_constant != constant) {
+          op.set(new_constant);
+        }
+      }
     }
   }
-
-  for (auto ent : remapper) {
-
-    ent.first->replaceAllUsesWith(ent.second);
-    ent.first->destroyConstant();
-  }
-
   return true;
 }
 
@@ -185,12 +198,6 @@ SliceManager::addSlice(llvm::ArrayRef<llvm::Instruction *> slice,
 
 
   this->insertClonedSliceIntoFunction(id, slice_repr, new_ret, cloned);
-
-  // Remove anvill pc to make interpretable
-  if (auto anvill_pc = this->mod.get()->getGlobalVariable(::anvill::kSymbolicPCName)) {
-    remill::ReplaceAllUsesOfConstant(
-        anvill_pc, llvm::Constant::getNullValue(anvill_pc->getType()), this->mod.get());
-  }
 
   if (!this->replaceAllGVConstantsWithInterpretableValue(cloned)) {
     slice_repr->eraseFromParent();

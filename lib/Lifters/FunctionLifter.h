@@ -209,6 +209,9 @@ class FunctionLifter {
 
   void InsertError(llvm::BasicBlock *block);
 
+  // End a block after a tail call (a jump that is a call).
+  void FinishTailCall(llvm::BasicBlock *block, bool can_return);
+
   /*
 NormalInsn, NoOp, InvalidInsn, ErrorInsn, DirectJump,
                    IndirectJump, IndirectFunctionCall, DirectFunctionCall,
