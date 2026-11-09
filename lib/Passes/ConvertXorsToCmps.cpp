@@ -221,6 +221,11 @@ ConvertXorsToCmps::run(llvm::Function &func,
     //    Most common example? A zext, like the following:
     //     %z = zext i1 %c to i64
 
+    // NOTE: These are collected over *all* uses of the compare, so they must
+    //       be cleared before the loop, not per use.
+    brs_to_invert.clear();
+    selects_to_invert.clear();
+
     for (auto &U : cmp->uses()) {
       llvm::Instruction *inst = llvm::dyn_cast<llvm::Instruction>(U.getUser());
 
@@ -228,9 +233,6 @@ ConvertXorsToCmps::run(llvm::Function &func,
       if (!inst || inst == xori) {
         continue;
       }
-
-      brs_to_invert.clear();
-      selects_to_invert.clear();
 
       llvm::BranchInst *br = llvm::dyn_cast<llvm::BranchInst>(inst);
 
@@ -244,7 +246,8 @@ ConvertXorsToCmps::run(llvm::Function &func,
 
       // A user of this compare is a SelectInst, and the compare is the
       // condition and not an operand.
-      if (si && llvm::dyn_cast<llvm::ICmpInst>(si->getCondition()) == cmp) {
+      if (si && llvm::dyn_cast<llvm::ICmpInst>(si->getCondition()) == cmp &&
+          si->getTrueValue() != cmp && si->getFalseValue() != cmp) {
         selects_to_invert.emplace_back(si);
         continue;
       }
