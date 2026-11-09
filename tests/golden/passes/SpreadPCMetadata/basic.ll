@@ -1,0 +1,25 @@
+; Instructions without `pc` metadata get one: first, an annotated
+; instruction gives its metadata to unannotated operands defined in the same
+; block; then, walking each block backwards starting with the block's last
+; metadata, unannotated instructions take the metadata of the next annotated
+; instruction after them (so instructions after the last annotated one take
+; its metadata). Blocks without any annotated instruction are unchanged.
+; RUN: --passes=SpreadPCMetadata
+target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-pc-linux-gnu-elf"
+
+define i32 @f(i32 %a, i32 %b) {
+entry:
+  %x = add i32 %a, 1
+  %y = mul i32 %x, %b, !pc !0
+  %z = sub i32 %y, 3
+  %w = xor i32 %z, %a, !pc !1
+  %tail = add i32 %w, 1
+  br label %next
+next:
+  %n = add i32 %tail, %x
+  ret i32 %n
+}
+
+!0 = !{i64 4096}
+!1 = !{i64 4100}
