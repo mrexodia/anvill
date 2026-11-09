@@ -349,8 +349,8 @@ TypeDictionary::TypeDictionary(llvm::LLVMContext &context) {
   u.named.uint8 = GetOrCreateInt(context, "uint8", 8);
   u.named.int16 = GetOrCreateInt(context, "int16", 16);
   u.named.uint16 = GetOrCreateInt(context, "uint16", 16);
-  u.named.int32 = GetOrCreateInt(context, "int24", 24);
-  u.named.uint32 = GetOrCreateInt(context, "uint24", 24);
+  u.named.int24 = GetOrCreateInt(context, "int24", 24);
+  u.named.uint24 = GetOrCreateInt(context, "uint24", 24);
   u.named.int32 = GetOrCreateInt(context, "int32", 32);
   u.named.uint32 = GetOrCreateInt(context, "uint32", 32);
   u.named.int64 = GetOrCreateInt(context, "int64", 64);
