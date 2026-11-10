@@ -7854,12 +7854,13 @@ The cxx-common/vcpkg setup described above has since been replaced by the [remil
 - **Docker / CI.** `ghcr.io/llvmparty/remill-template/dependencies:22.04-llvm19.1.7-remill2026.03.20` already provides LLVM 19.1.7 and remill's dependencies in `/dependencies`. The CI job and the root `Dockerfile` use that image as-is: they install Z3, protobuf and doctest from the Ubuntu packages and build anvill directly, without a dependency superbuild. Remill fetches sleigh itself, and the CMake falls back to module-mode `FindProtobuf` and a manual Z3 lookup when no CMake config packages exist.
 - **Defaults.** `ANVILL_ENABLE_INSTALL` and `ANVILL_ENABLE_PYTHON3_LIBS` now default to OFF.
 - **remill fork.** The submodule tracks [LLVMParty/remill](https://github.com/LLVMParty/remill), branch
-  `sparc-sleigh-v2`: LLVMParty's `master` (synced with upstream remill) plus eight commits, meant for upstreaming:
+  `sparc-sleigh-v2`: LLVMParty's `master` (synced with upstream remill) plus nine commits, meant for upstreaming:
   (1) the generic Sleigh control-flow categorization, (2) SPARC32 fixes, (3) replacing the hand-written SPARC64
   implementation with Sleigh, (4) removing the dead hand-written SPARC32 decoder, (5) JIT-executed lifting tests
   for both SPARCs (`tests/SPARC`) and CI smoketests, then three fixes found by anvill's SPARC kitchen-sink cases:
   (6) Sleigh register parts lifted by value, (7) the FP overlays in SPARC's byte order, and (8) struct returns
-  (`jmp %o7 + 12`) categorized as returns. Each commit builds. (This was first carried as a patch applied
+  (`jmp %o7 + 12`) categorized as returns; and (9) removing the obsolete `REMILL_BUILD_SPARC32/64_RUNTIME`
+  options. Each commit builds. (This was first carried as a patch applied
   at configure time, then as commits that added a separate `sparc64_sleigh` architecture; this series replaces
   them.) What they do:
   - **Why.** remill replaced its hand-written SPARC32 semantics with Ghidra's Sleigh specification (remill #681,
