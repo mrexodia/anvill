@@ -1037,7 +1037,11 @@ Aggregates and `fp128` are returned in memory: the caller stores the address at 
 hidden parameter is `__struct_ret_ptr: [SP + 64] : ptr`, and the callee returns that address in `O0`. An explicit
 `sret` parameter is also `[SP + 64]`. Vectors still use AllocationState on the return pool.
 
-NOTE: such callees return to `O7 + 12` (skipping an `unimp` word holding the size), which is not modelled.
+Such callees return to `O7 + 12`, skipping the `unimp <size>` word that follows the delay slot of the call. The
+remill fork categorizes `jmp %o7 + 12` / `jmp %i7 + 12` as returns, and `RemoveRemillFunctionReturns` accepts a
+return address displacement of 12 on SPARC (as well as 0, 4 and 8). (**Fixed:** this return was an indirect jump
+to `O7 + 12`, which left the whole `State` and a `__remill_jump` in the lifted function;
+`lifter/arch/sparc32_kitchen_sink` (`make_pair`), `passes/RemoveRemillFunctionReturns/sparc.ll`.)
 
 (**Fixed:** `double` arguments went to the stack because no register accepted 64-bit floats; stack offsets used
 exact sizes; aggregate results were an error; and an injected sret hit `CHECK(!injected_sret)`.)
@@ -2373,6 +2377,13 @@ ret_val = (1 return) LoadLiftedValue(returns[0]) | (N returns) insertvalue chain
 call void @__anvill_memory_escape(ptr mem)         ; keeps memory writes alive until Optimize removes it
 ret ret_val / ret void
 ```
+
+"PC" is the enclosing register of `ProgramCounterRegisterName()`. "SP" is the enclosing register of
+`StackPointerRegisterName()` when that is the same register under another name (e.g. `R13` for AArch32 `SP`),
+otherwise the named register itself. On SPARC32, `SP` is the high half of the
+64-bit `SP_7` pair (the other half is `O7`), so `SP_7` is initialized from `@__anvill_reg_SP_7` like any other
+register, and `SP` is then overwritten with `__anvill_sp`. (**Fixed:** anvill always used the enclosing register,
+so it stored a zero-extended 64-bit `__anvill_sp` into `SP_7`: `SP` became 0 and `O7` the stack address.)
 
 `StoreNativeValue` and `LoadLiftedValue` (Appendix B) implement "value ↔ register or `[base+off]`". Register stores first zero the full register when the types differ, then store the zero-extended value. Memory stores go through `__remill_write_memory_N`.
 
@@ -7843,10 +7854,12 @@ The cxx-common/vcpkg setup described above has since been replaced by the [remil
 - **Docker / CI.** `ghcr.io/llvmparty/remill-template/dependencies:22.04-llvm19.1.7-remill2026.03.20` already provides LLVM 19.1.7 and remill's dependencies in `/dependencies`. The CI job and the root `Dockerfile` use that image as-is: they install Z3, protobuf and doctest from the Ubuntu packages and build anvill directly, without a dependency superbuild. Remill fetches sleigh itself, and the CMake falls back to module-mode `FindProtobuf` and a manual Z3 lookup when no CMake config packages exist.
 - **Defaults.** `ANVILL_ENABLE_INSTALL` and `ANVILL_ENABLE_PYTHON3_LIBS` now default to OFF.
 - **remill fork.** The submodule tracks [LLVMParty/remill](https://github.com/LLVMParty/remill), branch
-  `sparc-sleigh-v2`: LLVMParty's `master` (synced with upstream remill) plus five commits, meant for upstreaming:
+  `sparc-sleigh-v2`: LLVMParty's `master` (synced with upstream remill) plus eight commits, meant for upstreaming:
   (1) the generic Sleigh control-flow categorization, (2) SPARC32 fixes, (3) replacing the hand-written SPARC64
   implementation with Sleigh, (4) removing the dead hand-written SPARC32 decoder, (5) JIT-executed lifting tests
-  for both SPARCs (`tests/SPARC`) and CI smoketests. Each commit builds. (This was first carried as a patch applied
+  for both SPARCs (`tests/SPARC`) and CI smoketests, then three fixes found by anvill's SPARC kitchen-sink cases:
+  (6) Sleigh register parts lifted by value, (7) the FP overlays in SPARC's byte order, and (8) struct returns
+  (`jmp %o7 + 12`) categorized as returns. Each commit builds. (This was first carried as a patch applied
   at configure time, then as commits that added a separate `sparc64_sleigh` architecture; this series replaces
   them.) What they do:
   - **Why.** remill replaced its hand-written SPARC32 semantics with Ghidra's Sleigh specification (remill #681,
@@ -7871,14 +7884,28 @@ The cxx-common/vcpkg setup described above has since been replaced by the [remil
     p-code CFG, so it is now ignored when categorizing (unless an intra-instruction branch targets it). Instructions
     that mix intra-instruction branches with exits (`ret` with `restore` in its delay slot) are categorized by their
     exits. Limitation: the `call x; restore` tail-call idiom is treated as a normal call that returns to `pc + 8`.
-  - The SPARC32 FP register overlays now follow the big-endian numbering (`fs0` is the high half of `fd0`), and
-    the FP condition codes are registered as `FCC0`–`FCC3` (they were `ccf_fcc0`–`3`, which never matched
+  - **Register parts (generic Sleigh fix).** Sleigh accesses a part of a register that has no name of its own as
+    a register varnode inside it: SPARC V9 `st %o0` stores the low word of the 64-bit `o0` as
+    `(register, o0 + 4, 4)`. `getRegisterName` returns the containing register, and the lifter accessed it as if
+    the varnode started at the register's first byte, which under SPARC's big-endian data layout is the high word
+    (anvill's `bump` stored the carry of the addition instead of the sum). Such varnodes are now read as
+    `trunc(lshr(whole, shift))` and written by merging into the whole register's value, with the shift taken
+    from Sleigh's register-space byte order.
+  - **Byte order of the state.** The SPARC runtimes are compiled for SPARC, and lifted modules use SPARC's
+    big-endian data layout, so the `State` is laid out big-endian: `fs(4q)` and `fd(4q)` (the high halves of
+    `fd(4q)` and `fq(4q)`) are the first bytes of `fq(4q)`, as in the original SPARC32 table. (An intermediate
+    version swapped the halves for host byte order to please remill's JIT test runner, which forces the host's
+    data layout; that broke anvill's view of the overlays.) The JIT runner therefore cannot check how the FP
+    registers overlay each other; the tests access each register at its table offset.
+  - The FP condition codes are registered as `FCC0`–`FCC3` (they were `ccf_fcc0`–`3`, which never matched
     Ghidra's `fcc0`–`3`, so each instruction got a fresh local and e.g. `fcmp` followed by `fbne` lost the
     condition). `Arch::IsSPARC32`/`IsSPARC64` also accept the Sleigh variants.
   - **Tests.** Each case lifts one instruction, runs it with the JIT and checks the category and registers:
-    `add`, `retl`/`call` with delay slots, `save`, `ret` + `restore`, `brz` (taken and not), `fcmps` (`FCC0`) and
-    `fmovd` read back through `FS0`/`FS1`. Against the unfixed code the `call`, `save`, `ret` + `restore`,
-    `fcmps` and `fmovd` cases fail.
+    `add`, `retl`/`call` with delay slots, `jmp %o7 + 12` / `jmp %i7 + 12` (returns) and `jmp %o7 + 16` (an
+    indirect jump), `save`, `ret` + `restore`, `brz` (taken and not), `fcmps` (`FCC0`) and `fmovd`. One more
+    SPARC64 test checks the lifted IR instead of executing it: every load of `o0` in a lifted `st %o0` loads all
+    8 bytes (the JIT runner, using the host's byte order, cannot see the register-part bug). Against the unfixed
+    code the `call`, `save`, `ret` + `restore`, `fcmps`, struct-return and register-part cases fail.
 - **Source changes.** These were mechanical LLVM 16–19 API updates:
   - `starts_with`, `std::optional` and the `TypeSize` getters;
   - `ConstantFoldIntegerCast` in place of the removed `zext` constant expression;
@@ -7979,6 +8006,7 @@ specify anvill's observable behaviour: a clean-room reimplementation is correct 
 | `passes/RemoveErrorIntrinsics/basic.ll` | A call to __remill_error and everything after it in its block is replaced by `unreachable` (the call's metadata moves to the `unreachable`). |
 | `passes/RemoveErrorIntrinsics/phi_incoming.ll` | PHI nodes lose the incoming values from blocks that now end in `unreachable`: a PHI left with one incoming value is replaced by it, with several it is rebuilt, and with none its block becomes unreachable too (and its value … |
 | `passes/RemoveRemillFunctionReturns/basic.ll` | Returns to the real return address are removed: the __remill_function_return call is replaced by its memory pointer and the return-address computation is erased. |
+| `passes/RemoveRemillFunctionReturns/sparc.ll` | On SPARC, returns to the return address plus 8 and plus 12 (structure returns, past the `unimp`) are removed; a return to the return address plus 16 is left alone, as SPARC has no return address slot. |
 | `passes/RemoveStackPointerCExprs/narrow.ll` | Constant expressions involving the stack pointer (`__anvill_sp`) that are narrower than a pointer (e.g. the low bits of RSP used by flag computations) are folded using a concrete stack pointer value: 0x00007ffc07000000 on … |
 | `passes/RemoveStackPointerCExprs/unresolvable.ll` | Stack pointer constant expressions that cannot be folded (they mix the stack pointer with an unknown global) are turned into instructions in the entry block, so that later passes see the individual operations. |
 | `passes/RemoveStackPointerCExprs/x86_flags.ll` | 32-bit x86 (concrete ESP 0x00860000): a sign-flag computation on ESP - 12. |
@@ -7996,9 +8024,11 @@ specify anvill's observable behaviour: a clean-room reimplementation is correct 
 | `lifter/arch/aarch64_add.textproto` | AArch64 with a type-only prototype: arguments in W0 and W1, the result in W0, the return address in X30 (LR). |
 | `lifter/arch/aarch64_indirect_result.textproto` | AArch64 result larger than 16 bytes: the caller passes the address of the result buffer in X8, so the lifted native function takes a hidden first `ptr` parameter and returns void. |
 | `lifter/arch/sparc32_call.textproto` | SPARC32 function with a register window: `save` makes the caller's O registers the callee's I registers, the call's argument is computed in its delay slot, and `restore` both pops the window and computes the result (g(a + 1) + … |
+| `lifter/arch/sparc32_kitchen_sink.textproto` | A bit of everything on SPARC32 (V8 ABI), one small function each: a signed compare and branch with a delay slot, a global load and store (the store in the delay slot of `retl`), a seventh argument on the stack at [SP + 92], a `double` argument moved from O0:O1 to F0 through the stack, a structure returned in memory (address at [SP + 64], return to O7 + 12) and its caller (`unimp 8` after the call's delay slot). |
 | `lifter/arch/sparc32_delay_slot.textproto` | SPARC32 leaf function whose addition is in the delay slot of `retl`. |
 | `lifter/arch/sparc64_branch.textproto` | SPARC V9 conditional branch with a delay slot that is not annulled: the `mov 20` in the delay slot executes on both paths, so the result is 20 when x == 0 and 10 otherwise. |
 | `lifter/arch/sparc64_call.textproto` | SPARC V9 function with a register window: `save` makes the caller's O registers the callee's I registers, the call's argument is computed in its delay slot, and `restore` both pops the window and computes the result (g(a + 1) … |
+| `lifter/arch/sparc64_kitchen_sink.textproto` | A bit of everything on SPARC64 (V9 ABI), one small function each: `bge %xcc` with a delay slot, a global load and a 32-bit store of a 64-bit register in the delay slot of `retl`, a seventh argument in stack slot 6 ([SP + 2047 + 176]), a `double` in F0, a two-register structure result and its caller with a register window. |
 | `lifter/arch/sparc64_leaf.textproto` | SPARC V9 (64-bit) leaf function, lifted with remill's Sleigh-based `sparc64` architecture: the 64-bit addition in the delay slot of `retl` is part of the same decoded instruction. |
 | `lifter/arch/x86_cdecl.textproto` | 32-bit x86 cdecl with a type-only prototype: the allocator puts both arguments on the stack in 4-byte slots ([ESP + 4], [ESP + 8]) and the result in EAX; the caller pops the arguments (ESP + 4 after the return). |
 | `lifter/arch/x86_fastcall.textproto` | 32-bit x86 fastcall: the first two 32-bit arguments are in ECX and EDX, the third is on the stack at [ESP + 4], and the callee pops it (`ret 4`, ESP + 8 after the return). |
@@ -8080,6 +8110,9 @@ reimplementation that wants the original output must reproduce the "old" side of
 | 26c | A data pointer to its own variable stays an `inttoptr` constant. | Open (documented) | `lifter/data/pointers` |
 | 26d | SPARC32 lifts every instruction as an EmulateInstruction hyper call; SPARC64 `Arch::Build` aborts. (Cause: anvill used remill's old SPARC archs, whose semantics are gone.) | Fixed (Sleigh-based archs; SPARC64 added in the LLVMParty remill fork, §16.6) | `lifter/arch/sparc32_*`, `lifter/arch/sparc64_*`, `AllocateSignatures/sparc64.ll` |
 | 26e | SPARC `call x; restore` (tail-call idiom) is treated as a call that returns to `pc + 8`. | Open (documented) | — |
+| 26f | SPARC64: a 32-bit access to a 64-bit register (`st %o0`) reads its high word (Sleigh register part lifted from the register's first byte, under the big-endian layout). | Fixed (remill fork, §16.6) | `lifter/arch/sparc64_kitchen_sink` (`bump`), remill `SPARC64Lifts.StoreWordReadsLowWordOfRegister` |
+| 26g | SPARC32: the stack pointer is always 0, so stack accesses become absolute addresses. (`SP` is the high half of the `SP_7` pair; the lifter initialized the enclosing `SP_7` with a zero-extended `__anvill_sp`.) | Fixed (the stack pointer register is `SP` itself when its enclosing register is wider) | `lifter/arch/sparc32_kitchen_sink` (`seventh`, `twice`, `use_pair`) |
+| 26h | SPARC: structure-returning functions (`jmp %o7 + 12`) end in an indirect jump, keeping the whole `State`. | Fixed (remill fork categorizes them as returns; displacement 12 accepted) | `lifter/arch/sparc32_kitchen_sink` (`make_pair`), `RemoveRemillFunctionReturns/sparc.ll` |
 | | **Cross-reference folder (§12)** | | |
 | 27 | `ICmp ule` is `<`; clz/ctz/ctpop use 64-bit semantics (clz/ctz of 0 UB); oversized shifts are not invalid. | Fixed | `CrossReferenceFolderTest.cpp` |
 | 28 | The entity fast path leaves flags uninitialised; `Displacement()` returns 0 for widths other than 8/16/32/64. | Fixed | `CrossReferenceFolderTest.cpp`, `RemoveStackPointerCExprs/*` |

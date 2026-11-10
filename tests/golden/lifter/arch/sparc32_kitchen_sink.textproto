@@ -1,0 +1,100 @@
+# A bit of everything on SPARC32 (V8 ABI), each in its own small function:
+#   int counter = 5;
+#   int max(int a, int b)        - cmp + bge with a delay slot
+#   int bump(int x)              - counter += x (global load and store, the
+#                                  store in the delay slot of retl)
+#   int seventh(int a, ..., int g) - a + g, g passed on the stack at [sp+92]
+#                                  (`SP` is the high half of the `SP_7`
+#                                  register pair; the stack pointer is `SP`)
+#   double twice(double x)       - x + x; x arrives in %o0:%o1 and moves to
+#                                  %f0 through the stack, the result is in %f0
+#   struct pair make_pair(int a, int b) - returned in memory: the address is
+#                                  at [sp+64], the callee returns to %o7+12
+#                                  (`jmp %o7+12` is a return)
+#   int use_pair(int a, int b)   - make_pair(a, b).a + .b; the call is
+#                                  followed by `unimp 8` (struct return size)
+# Assembled with clang --target=sparc-linux-gnu (the call is a .word with a
+# resolved displacement, since ld.lld cannot link SPARC).
+#   401000: 80 a2 00 09 cmp %o0, %o1
+#   401004: 16 80 00 03 bge 3
+#   401008: 01 00 00 00 nop
+#   40100c: 90 10 00 09 mov %o1, %o0
+#   401010: 81 c3 e0 08 retl
+#   401014: 01 00 00 00 nop
+#   401018: 03 00 10 10 sethi 4112, %g1
+#   40101c: d2 00 60 00 ld [%g1], %o1
+#   401020: 90 02 40 08 add %o1, %o0, %o0
+#   401024: 81 c3 e0 08 retl
+#   401028: d0 20 60 00 st %o0, [%g1]
+#   40102c: c2 03 a0 5c ld [%sp+92], %g1
+#   401030: 81 c3 e0 08 retl
+#   401034: 90 02 00 01 add %o0, %g1, %o0
+#   401038: d0 3b a0 48 std %o0, [%sp+72]
+#   40103c: c1 1b a0 48 ldd [%sp+72], %f0
+#   401040: 81 c3 e0 08 retl
+#   401044: 81 a0 08 40 faddd %f0, %f0, %f0
+#   401048: da 03 a0 40 ld [%sp+64], %o5
+#   40104c: d0 23 40 00 st %o0, [%o5]
+#   401050: d2 23 60 04 st %o1, [%o5+4]
+#   401054: 81 c3 e0 0c jmp %o7+12
+#   401058: 90 10 00 0d mov %o5, %o0
+#   40105c: 9d e3 bf 90 save %sp, -112, %sp
+#   401060: 82 07 bf f8 add %fp, -8, %g1
+#   401064: c2 23 a0 40 st %g1, [%sp+64]
+#   401068: 90 10 00 18 mov %i0, %o0
+#   40106c: 7f ff ff f7 call -36
+#   401070: 92 10 00 19 mov %i1, %o1
+#   401074: 00 00 00 08 unimp 8
+#   401078: f0 07 bf f8 ld [%fp+8184], %i0
+#   40107c: c2 07 bf fc ld [%fp+8188], %g1
+#   401080: 81 c7 e0 08 ret
+#   401084: 91 ee 00 01 restore %i0, %g1, %o0
+# RUN: --add_names
+arch: ARCH_SPARC32
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { base: BT_I32 } arguments { base: BT_I32 } } }
+  }
+}
+functions {
+  entry_address: 0x401018
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { base: BT_I32 } } }
+  }
+}
+functions {
+  entry_address: 0x40102c
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { base: BT_I32 } arguments { base: BT_I32 } arguments { base: BT_I32 } arguments { base: BT_I32 } arguments { base: BT_I32 } arguments { base: BT_I32 } arguments { base: BT_I32 } } }
+  }
+}
+functions {
+  entry_address: 0x401038
+  callable {
+    type { function { return_type { base: BT_FL64 } arguments { base: BT_FL64 } } }
+  }
+}
+functions {
+  entry_address: 0x401048
+  callable {
+    type { function { return_type { struct { members { base: BT_I32 } members { base: BT_I32 } } } arguments { base: BT_I32 } arguments { base: BT_I32 } } }
+  }
+}
+functions {
+  entry_address: 0x40105c
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { base: BT_I32 } arguments { base: BT_I32 } } }
+  }
+}
+global_variables { address: 0x404000 type { base: BT_I32 } }
+memory_ranges { address: 0x401000 is_executable: true values: "\x80\xa2\x00\x09\x16\x80\x00\x03\x01\x00\x00\x00\x90\x10\x00\x09\x81\xc3\xe0\x08\x01\x00\x00\x00\x03\x00\x10\x10\xd2\x00\x60\x00\x90\x02\x40\x08\x81\xc3\xe0\x08\xd0\x20\x60\x00\xc2\x03\xa0\x5c\x81\xc3\xe0\x08\x90\x02\x00\x01\xd0\x3b\xa0\x48\xc1\x1b\xa0\x48\x81\xc3\xe0\x08\x81\xa0\x08\x40\xda\x03\xa0\x40\xd0\x23\x40\x00\xd2\x23\x60\x04\x81\xc3\xe0\x0c\x90\x10\x00\x0d\x9d\xe3\xbf\x90\x82\x07\xbf\xf8\xc2\x23\xa0\x40\x90\x10\x00\x18\x7f\xff\xff\xf7\x92\x10\x00\x19\x00\x00\x00\x08\xf0\x07\xbf\xf8\xc2\x07\xbf\xfc\x81\xc7\xe0\x08\x91\xee\x00\x01" }
+memory_ranges { address: 0x404000 is_writeable: true values: "\x00\x00\x00\x05" }
+symbols { name: "max" address: 0x401000 }
+symbols { name: "bump" address: 0x401018 }
+symbols { name: "seventh" address: 0x40102c }
+symbols { name: "twice" address: 0x401038 }
+symbols { name: "make_pair" address: 0x401048 }
+symbols { name: "use_pair" address: 0x40105c }
+symbols { name: "counter" address: 0x404000 }

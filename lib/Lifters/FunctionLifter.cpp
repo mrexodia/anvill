@@ -154,6 +154,17 @@ static void AnnotateInstructions(llvm::BasicBlock *block, unsigned id,
   }
 }
 
+// The register that holds the stack pointer: the enclosing register of the
+// stack pointer when that is the same register under another name (e.g.
+// `R13` for `SP` on AArch32). On SPARC32, `SP` is a half of the `SP_7`
+// register pair, the other half being `O7`, so the stack pointer is `SP`
+// itself.
+static const remill::Register *StackPointerRegister(const remill::Arch &arch) {
+  const auto sp = arch.RegisterByName(arch.StackPointerRegisterName());
+  const auto enclosing = sp->EnclosingRegister();
+  return enclosing->size == sp->size ? enclosing : sp;
+}
+
 }  // namespace
 
 FunctionLifter::~FunctionLifter(void) {}
@@ -170,9 +181,7 @@ FunctionLifter::FunctionLifter(const LifterOptions &options_)
       pc_reg(options.arch
                  ->RegisterByName(options.arch->ProgramCounterRegisterName())
                  ->EnclosingRegister()),
-      sp_reg(
-          options.arch->RegisterByName(options.arch->StackPointerRegisterName())
-              ->EnclosingRegister()),
+      sp_reg(StackPointerRegister(*options.arch)),
       is_sparc(options.arch->IsSPARC32() || options.arch->IsSPARC64()),
       is_x86_or_amd64(options.arch->IsX86() || options.arch->IsAMD64()),
       i8_type(llvm::Type::getInt8Ty(llvm_context)),

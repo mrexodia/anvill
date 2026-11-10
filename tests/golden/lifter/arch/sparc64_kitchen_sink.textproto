@@ -1,0 +1,88 @@
+# A bit of everything on SPARC64 (V9 ABI), each in its own small function:
+#   int counter = 5;
+#   long max(long a, long b)     - cmp + bge %xcc with a delay slot
+#   int bump(int x)              - counter += x (global load and store, the
+#                                  store in the delay slot of retl; the 32-bit
+#                                  `st` stores the low word of the 64-bit %o0)
+#   long seventh(long a, ..., long g) - a + g, g in argument slot 6 on the
+#                                  stack at [sp + 2047 + 176]
+#   double twice(double x)       - x + x, in and out in %f0 (`fd0`)
+#   struct pair swap(long a, long b) - { b, a }, returned in %o0, %o1
+#   long use_swap(long a, long b) - swap(a, b).a + .b, with a register window
+# Assembled with clang --target=sparcv9-linux-gnu (the call is a .word with a
+# resolved displacement, since ld.lld cannot link SPARC).
+#   401000: 80 a2 00 09 cmp %o0, %o1
+#   401004: 16 68 00 03 bge %xcc, 3
+#   401008: 01 00 00 00 nop
+#   40100c: 90 10 00 09 mov %o1, %o0
+#   401010: 81 c3 e0 08 retl
+#   401014: 01 00 00 00 nop
+#   401018: 03 00 10 10 sethi 4112, %g1
+#   40101c: d2 00 60 00 ld [%g1], %o1
+#   401020: 90 02 40 08 add %o1, %o0, %o0
+#   401024: 81 c3 e0 08 retl
+#   401028: d0 20 60 00 st %o0, [%g1]
+#   40102c: c2 5b a8 af ldx [%sp+2223], %g1
+#   401030: 81 c3 e0 08 retl
+#   401034: 90 02 00 01 add %o0, %g1, %o0
+#   401038: 81 c3 e0 08 retl
+#   40103c: 81 a0 08 40 faddd %f0, %f0, %f0
+#   401040: 82 10 00 09 mov %o1, %g1
+#   401044: 92 10 00 08 mov %o0, %o1
+#   401048: 81 c3 e0 08 retl
+#   40104c: 90 10 00 01 mov %g1, %o0
+#   401050: 9d e3 bf 50 save %sp, -176, %sp
+#   401054: 90 10 00 18 mov %i0, %o0
+#   401058: 7f ff ff fa call -24
+#   40105c: 92 10 00 19 mov %i1, %o1
+#   401060: 81 c7 e0 08 ret
+#   401064: 91 ea 00 09 restore %o0, %o1, %o0
+# RUN: --add_names
+arch: ARCH_SPARC64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    type { function { return_type { base: BT_I64 } arguments { base: BT_I64 } arguments { base: BT_I64 } } }
+  }
+}
+functions {
+  entry_address: 0x401018
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { base: BT_I32 } } }
+  }
+}
+functions {
+  entry_address: 0x40102c
+  callable {
+    type { function { return_type { base: BT_I64 } arguments { base: BT_I64 } arguments { base: BT_I64 } arguments { base: BT_I64 } arguments { base: BT_I64 } arguments { base: BT_I64 } arguments { base: BT_I64 } arguments { base: BT_I64 } } }
+  }
+}
+functions {
+  entry_address: 0x401038
+  callable {
+    type { function { return_type { base: BT_FL64 } arguments { base: BT_FL64 } } }
+  }
+}
+functions {
+  entry_address: 0x401040
+  callable {
+    type { function { return_type { struct { members { base: BT_I64 } members { base: BT_I64 } } } arguments { base: BT_I64 } arguments { base: BT_I64 } } }
+  }
+}
+functions {
+  entry_address: 0x401050
+  callable {
+    type { function { return_type { base: BT_I64 } arguments { base: BT_I64 } arguments { base: BT_I64 } } }
+  }
+}
+global_variables { address: 0x404000 type { base: BT_I32 } }
+memory_ranges { address: 0x401000 is_executable: true values: "\x80\xa2\x00\x09\x16\x68\x00\x03\x01\x00\x00\x00\x90\x10\x00\x09\x81\xc3\xe0\x08\x01\x00\x00\x00\x03\x00\x10\x10\xd2\x00\x60\x00\x90\x02\x40\x08\x81\xc3\xe0\x08\xd0\x20\x60\x00\xc2\x5b\xa8\xaf\x81\xc3\xe0\x08\x90\x02\x00\x01\x81\xc3\xe0\x08\x81\xa0\x08\x40\x82\x10\x00\x09\x92\x10\x00\x08\x81\xc3\xe0\x08\x90\x10\x00\x01\x9d\xe3\xbf\x50\x90\x10\x00\x18\x7f\xff\xff\xfa\x92\x10\x00\x19\x81\xc7\xe0\x08\x91\xea\x00\x09" }
+memory_ranges { address: 0x404000 is_writeable: true values: "\x00\x00\x00\x05" }
+symbols { name: "max" address: 0x401000 }
+symbols { name: "bump" address: 0x401018 }
+symbols { name: "seventh" address: 0x40102c }
+symbols { name: "twice" address: 0x401038 }
+symbols { name: "swap" address: 0x401040 }
+symbols { name: "use_swap" address: 0x401050 }
+symbols { name: "counter" address: 0x404000 }

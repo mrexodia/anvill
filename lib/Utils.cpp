@@ -637,6 +637,11 @@ bool IsProgramCounter(llvm::Module *, llvm::Value *val) {
   }
 }
 
+// Returns `true` if `v` is a displacement from the return address at which
+// a function can return. On SPARC, the return address register holds the
+// address of the call: functions return to it plus 8 (past the call and its
+// delay slot), and functions returning a structure return to it plus 12
+// (also past the `unimp <size>` that follows the delay slot).
 static bool IsAcceptableReturnAddressDisplacement(llvm::Module *module,
                                                   llvm::Constant *v) {
   auto ci = llvm::dyn_cast<llvm::ConstantInt>(v);
@@ -651,7 +656,7 @@ static bool IsAcceptableReturnAddressDisplacement(llvm::Module *module,
     case llvm::Triple::ArchType::sparc:
     case llvm::Triple::ArchType::sparcel:
     case llvm::Triple::ArchType::sparcv9:
-      return disp == 0u || disp == 4u || disp == 8u;
+      return disp == 0u || disp == 4u || disp == 8u || disp == 12u;
     default: return disp == 0;
   }
 }
