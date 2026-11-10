@@ -7831,7 +7831,7 @@ A `binja` stage adds `scripts/docker-spec-entrypoint.sh`, which runs the legacy 
 
 The cxx-common/vcpkg setup described above has since been replaced by the [remill-template](https://github.com/LLVMParty/remill-template) layout:
 
-- **Remill** is a submodule at `dependencies/remill` (LLVMParty's fork, branch `anvill-sparc-sleigh`, see below) and is built as part of anvill with `add_subdirectory`, with remill testing turned off. The old root `remill` submodule, `cmake/modules/Find*.cmake`, `CMakePresets.json` and the cxx-common scripts are gone.
+- **Remill** is a submodule at `dependencies/remill` (LLVMParty's fork, branch `sparc-sleigh`, see below) and is built as part of anvill with `add_subdirectory`, with remill testing turned off. The old root `remill` submodule, `cmake/modules/Find*.cmake`, `CMakePresets.json` and the cxx-common scripts are gone.
 - **`dependencies/`** is a CMake superbuild (from the template) that installs a prefix in `dependencies/install`. It contains:
   - remill's dependencies: gflags, glog, googletest and XED;
   - sleigh, with remill's patches;
@@ -7843,9 +7843,11 @@ The cxx-common/vcpkg setup described above has since been replaced by the [remil
 - **Docker / CI.** `ghcr.io/llvmparty/remill-template/dependencies:22.04-llvm19.1.7-remill2026.03.20` already provides LLVM 19.1.7 and remill's dependencies in `/dependencies`. The CI job and the root `Dockerfile` use that image as-is: they install Z3, protobuf and doctest from the Ubuntu packages and build anvill directly, without a dependency superbuild. Remill fetches sleigh itself, and the CMake falls back to module-mode `FindProtobuf` and a manual Z3 lookup when no CMake config packages exist.
 - **Defaults.** `ANVILL_ENABLE_INSTALL` and `ANVILL_ENABLE_PYTHON3_LIBS` now default to OFF.
 - **remill fork.** The submodule tracks [LLVMParty/remill](https://github.com/LLVMParty/remill), branch
-  `anvill-sparc-sleigh`: LLVMParty's `master` plus one commit that adds a Sleigh-based SPARC64 architecture and
-  fixes the Sleigh SPARC support. (It was first carried as a patch applied at configure time; the fork replaces
-  that.) What the commit does:
+  `sparc-sleigh`: LLVMParty's `master` plus four commits, meant for upstreaming. They add a Sleigh-based SPARC64
+  architecture and fix the Sleigh SPARC support: (1) the generic Sleigh control-flow categorization, (2) SPARC32
+  fixes, (3) the SPARC64 architecture, (4) JIT-executed lifting tests for both SPARCs (`tests/SPARC`) and CI
+  smoketests. (This was first carried as a patch applied at configure time, then as a single commit on
+  `anvill-sparc-sleigh`; the series replaces both.) What they do:
   - **Why.** remill replaced its hand-written SPARC32 semantics with Ghidra's Sleigh specification (remill #681,
     arch name `sparc32_sleigh`). The old `sparc32` arch kept its decoder but lost its semantics, so every
     instruction became a `kSPARC32EmulateInstruction` hyper call. The hand-written SPARC64 semantics still exist
@@ -7864,8 +7866,14 @@ The cxx-common/vcpkg setup described above has since been replaced by the [remil
     p-code CFG, so it is now ignored when categorizing (unless an intra-instruction branch targets it). Instructions
     that mix intra-instruction branches with exits (`ret` with `restore` in its delay slot) are categorized by their
     exits. Limitation: the `call x; restore` tail-call idiom is treated as a normal call that returns to `pc + 8`.
-  - The SPARC32 FP register overlays now follow the big-endian numbering (`fs0` is the high half of `fd0`).
-    `Arch::IsSPARC32`/`IsSPARC64` also accept the Sleigh variants.
+  - The SPARC32 FP register overlays now follow the big-endian numbering (`fs0` is the high half of `fd0`), and
+    the FP condition codes are registered as `FCC0`–`FCC3` (they were `ccf_fcc0`–`3`, which never matched
+    Ghidra's `fcc0`–`3`, so each instruction got a fresh local and e.g. `fcmp` followed by `fbne` lost the
+    condition). `Arch::IsSPARC32`/`IsSPARC64` also accept the Sleigh variants.
+  - **Tests.** Each case lifts one instruction, runs it with the JIT and checks the category and registers:
+    `add`, `retl`/`call` with delay slots, `save`, `ret` + `restore`, `brz` (taken and not), `fcmps` (`FCC0`) and
+    `fmovd` read back through `FS0`/`FS1`. Against the unfixed code the `call`, `save`, `ret` + `restore`,
+    `fcmps` and `fmovd` cases fail.
 - **Source changes.** These were mechanical LLVM 16–19 API updates:
   - `starts_with`, `std::optional` and the `TypeSize` getters;
   - `ConstantFoldIntegerCast` in place of the removed `zext` constant expression;

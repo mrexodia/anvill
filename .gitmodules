@@ -5,4 +5,4 @@
 [submodule "dependencies/remill"]
 	path = dependencies/remill
 	url = https://github.com/LLVMParty/remill
-	branch = anvill-sparc-sleigh
+	branch = sparc-sleigh
