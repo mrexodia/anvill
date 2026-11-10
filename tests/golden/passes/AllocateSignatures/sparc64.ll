@@ -1,5 +1,5 @@
 ; SPARC V9 (64-bit, Linux) with remill's Sleigh-based architecture
-; (sparc64_sleigh): 8-byte argument slots; the first six integer slots are in
+; (sparc64): 8-byte argument slots; the first six integer slots are in
 ; O0-O5, floating-point arguments use the FP register of their slot (FS2k+1,
 ; FD2k, FQ2k), later slots are on the stack at [SP + 2223 + 8 * (k - 6)] with
 ; small values right-justified, aggregates of at most 16 bytes are passed as

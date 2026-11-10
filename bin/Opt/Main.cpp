@@ -233,14 +233,6 @@ int main(int argc, char *argv[]) {
   llvm::Triple triple(module->getTargetTriple());
   auto arch_name = FLAGS_arch.empty() ? remill::GetArchName(triple)
                                       : remill::GetArchName(FLAGS_arch);
-
-  // As in the specification loader, SPARC uses remill's Sleigh-based
-  // architectures (the hand-written ones no longer have semantics).
-  if (arch_name == remill::kArchSparc32) {
-    arch_name = remill::kArchSparc32_SLEIGH;
-  } else if (arch_name == remill::kArchSparc64) {
-    arch_name = remill::kArchSparc64_SLEIGH;
-  }
   auto os_name = FLAGS_os.empty() ? remill::GetOSName(triple)
                                   : remill::GetOSName(FLAGS_os);
   if (os_name == remill::kOSInvalid) {

@@ -307,15 +307,12 @@ GetArch(llvm::LLVMContext &context,
     case ::specification::ARCH_AARCH32:
       arch_name = remill::kArchAArch32LittleEndian;
       break;
-    // remill's hand-written SPARC semantics were removed in favour of Sleigh
-    // (remill #681); the old `kArchSparc32` decoder now lifts every
-    // instruction as an "emulate instruction" hyper call, and `kArchSparc64`
-    // has no semantics module at all. Use the Sleigh-based architectures.
+    // Both SPARCs are lifted with Sleigh (see dependencies/remill).
     case ::specification::ARCH_SPARC32:
-      arch_name = remill::kArchSparc32_SLEIGH;
+      arch_name = remill::kArchSparc32;
       break;
     case ::specification::ARCH_SPARC64:
-      arch_name = remill::kArchSparc64_SLEIGH;
+      arch_name = remill::kArchSparc64;
       break;
   }
 

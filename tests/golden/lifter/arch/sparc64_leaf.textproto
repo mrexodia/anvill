@@ -1,5 +1,5 @@
 # SPARC V9 (64-bit) leaf function, lifted with remill's Sleigh-based
-# `sparc64_sleigh` architecture: the 64-bit addition in the delay slot of
+# `sparc64` architecture: the 64-bit addition in the delay slot of
 # `retl` is part of the same decoded instruction. Arguments in O0 and O1,
 # result in O0, return address in O7 (V9 ABI, see AllocateSignatures/sparc64).
 #   long add(long a, long b) { return a + b; }

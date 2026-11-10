@@ -1,9 +1,9 @@
 # SPARC32 leaf function whose addition is in the delay slot of `retl`. The
 # allocator places the arguments in O0 and O1 and the result in O0, with the
-# return address in O7. remill's Sleigh-based SPARC32 (`sparc32_sleigh`)
-# decodes `retl` together with its delay slot, as one 8-byte instruction.
-# (Previously anvill used remill's old `sparc32` architecture, whose
-# hand-written semantics were removed upstream: every instruction became a
+# return address in O7. remill lifts SPARC32 with Sleigh, which decodes
+# `retl` together with its delay slot, as one 8-byte instruction.
+# (Previously remill's `sparc32` was a hand-written decoder whose semantics
+# had been removed upstream: every instruction became a
 # `kSPARC32EmulateInstruction` hyper call and the `add` was lost.)
 # (Hand-encoded; ld.lld cannot link 32-bit SPARC.)
 #   int add(int a, int b) { return a + b; }

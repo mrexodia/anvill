@@ -244,7 +244,7 @@ message Specification {
   | 9 | SPARC32 |
   | 10 | SPARC64 |
 
-  0 = unspecified, which is rejected. These map one-to-one to `remill::kArchX86` … `kArchAArch32LittleEndian`. `AARCH64` maps to `kArchAArch64LittleEndian` and `AARCH32` to `kArchAArch32LittleEndian`. **SPARC32 and SPARC64 map to remill's Sleigh-based `kArchSparc32_SLEIGH` and `kArchSparc64_SLEIGH`** (§16.6). (**Fixed:** they mapped to `kArchSparc32`/`kArchSparc64`. In current remill the former's hand-written semantics were removed when SPARC moved to Sleigh, so every instruction lifted as a `kSPARC32EmulateInstruction` hyper call, and the latter has no semantics module at all, so building it aborted.)
+  0 = unspecified, which is rejected. These map one-to-one to `remill::kArchX86` … `kArchAArch32LittleEndian`. `AARCH64` maps to `kArchAArch64LittleEndian` and `AARCH32` to `kArchAArch32LittleEndian`. `SPARC32` and `SPARC64` map to `kArchSparc32`/`kArchSparc64`, which in the remill fork anvill uses are both lifted with Sleigh (§16.6). (**Fixed:** in upstream remill the hand-written SPARC32 semantics were removed when SPARC32 moved to Sleigh, so `kArchSparc32` lifted every instruction as a `kSPARC32EmulateInstruction` hyper call, and `kArchSparc64` had no semantics module at all, so building it aborted.)
 - `OS`: 1 LINUX, 2 MACOS, 3 WINDOWS, 4 SOLARIS. 0 is rejected.
 - `CallingConvention`: the values are **LLVM `CallingConv::ID` numbers**: 0 unspecified/C, 1 CDECL, 64 STDCALL, 65 FASTCALL, 70 THISCALL, 78 AMD64_SYSV, 79 WIN64, 80 VECTORCALL. The value is copied into `llvm::Function::setCallingConv`, except that **CDECL (1) maps to C (0)**: 1 is not an LLVM calling convention ID (LLVM's C is 0 and fastcc is 8). (**Fixed:** the value used to be copied verbatim, declaring functions `cc 1`; `lifter/spec/cdecl_calling_convention`.) WIN64 and VECTORCALL have no allocator (§8).
 - `FunctionLinkage`:
@@ -7831,7 +7831,7 @@ A `binja` stage adds `scripts/docker-spec-entrypoint.sh`, which runs the legacy 
 
 The cxx-common/vcpkg setup described above has since been replaced by the [remill-template](https://github.com/LLVMParty/remill-template) layout:
 
-- **Remill** is a submodule at `dependencies/remill` (LLVMParty's fork, branch `sparc-sleigh-rebased`, see below) and is built as part of anvill with `add_subdirectory`, with remill testing turned off. The old root `remill` submodule, `cmake/modules/Find*.cmake`, `CMakePresets.json` and the cxx-common scripts are gone.
+- **Remill** is a submodule at `dependencies/remill` (LLVMParty's fork, branch `sparc-sleigh-v2`, see below) and is built as part of anvill with `add_subdirectory`, with remill testing turned off. The old root `remill` submodule, `cmake/modules/Find*.cmake`, `CMakePresets.json` and the cxx-common scripts are gone.
 - **`dependencies/`** is a CMake superbuild (from the template) that installs a prefix in `dependencies/install`. It contains:
   - remill's dependencies: gflags, glog, googletest and XED;
   - sleigh, with remill's patches;
@@ -7843,20 +7843,25 @@ The cxx-common/vcpkg setup described above has since been replaced by the [remil
 - **Docker / CI.** `ghcr.io/llvmparty/remill-template/dependencies:22.04-llvm19.1.7-remill2026.03.20` already provides LLVM 19.1.7 and remill's dependencies in `/dependencies`. The CI job and the root `Dockerfile` use that image as-is: they install Z3, protobuf and doctest from the Ubuntu packages and build anvill directly, without a dependency superbuild. Remill fetches sleigh itself, and the CMake falls back to module-mode `FindProtobuf` and a manual Z3 lookup when no CMake config packages exist.
 - **Defaults.** `ANVILL_ENABLE_INSTALL` and `ANVILL_ENABLE_PYTHON3_LIBS` now default to OFF.
 - **remill fork.** The submodule tracks [LLVMParty/remill](https://github.com/LLVMParty/remill), branch
-  `sparc-sleigh-rebased`: LLVMParty's `master` (synced with upstream remill) plus four commits, meant for upstreaming. They add a Sleigh-based SPARC64
-  architecture and fix the Sleigh SPARC support: (1) the generic Sleigh control-flow categorization, (2) SPARC32
-  fixes, (3) the SPARC64 architecture, (4) JIT-executed lifting tests for both SPARCs (`tests/SPARC`) and CI
-  smoketests. (This was first carried as a patch applied at configure time, then as a single commit on
-  `anvill-sparc-sleigh`; the series replaces both.) What they do:
+  `sparc-sleigh-v2`: LLVMParty's `master` (synced with upstream remill) plus five commits, meant for upstreaming:
+  (1) the generic Sleigh control-flow categorization, (2) SPARC32 fixes, (3) replacing the hand-written SPARC64
+  implementation with Sleigh, (4) removing the dead hand-written SPARC32 decoder, (5) JIT-executed lifting tests
+  for both SPARCs (`tests/SPARC`) and CI smoketests. Each commit builds. (This was first carried as a patch applied
+  at configure time, then as commits that added a separate `sparc64_sleigh` architecture; this series replaces
+  them.) What they do:
   - **Why.** remill replaced its hand-written SPARC32 semantics with Ghidra's Sleigh specification (remill #681,
     arch name `sparc32_sleigh`). The old `sparc32` arch kept its decoder but lost its semantics, so every
-    instruction became a `kSPARC32EmulateInstruction` hyper call. The hand-written SPARC64 semantics still exist
-    but depend on deleted SPARC32 files, so their runtime is never built and `Arch::Build` for `sparc64` aborts.
-    `Arch.h` already declared `GetSPARC64Sleigh`, but nothing defined it.
-  - **`kArchSparc64_SLEIGH` (`sparc64_sleigh`).** Ghidra's `SparcV9_64.sla`, a `State` laid out after its register
-    space (`include/remill/Arch/SPARC64/Runtime/SleighState.h`: 64-bit `G0`–`I7`, `PC`, `NPC`, ancillary and
-    privileged registers, condition codes, `FS`/`FD`/`FQ` overlays in big-endian numbering), a register table and
-    a `sparc64_sleigh.bc` runtime. Ghidra decodes a delayed control transfer together with its delay slot, so the
+    instruction became a `kSPARC32EmulateInstruction` hyper call. The hand-written SPARC64 semantics depend on
+    deleted SPARC32 files, so their runtime was never built and `Arch::Build` for `sparc64` aborted. `Arch.h`
+    already declared `GetSPARC64Sleigh`, but nothing defined it.
+  - **Deletions (about 9,600 lines).** The whole hand-written SPARC64 implementation (decoder, semantics,
+    runtime, `State`) and the hand-written SPARC32 decoder are removed, with the `remill_arch_sparc32/64`
+    libraries. As for `aarch32`, `thumb2` and `ppc`, the plain names are now the Sleigh architectures:
+    `kArchSparc32` (`sparc32`) and `kArchSparc64` (`sparc64`); `sparc32_sleigh` remains an alias of `sparc32`.
+  - **SPARC64.** Ghidra's `SparcV9_64.sla`, a `State` laid out after its register space
+    (`include/remill/Arch/SPARC64/Runtime/State.h`: 64-bit `G0`–`I7`, `PC`, `NPC`, ancillary and privileged
+    registers, condition codes, `FS`/`FD`/`FQ` overlays in big-endian numbering), a register table and a
+    `sparc64.bc` runtime. Ghidra decodes a delayed control transfer together with its delay slot, so the
     architecture reports no separate delay slots.
   - **`DECOMPILE_MODE`.** On both SPARCs it is a decoding-context value of 1 (as in `SparcV9.pspec`) instead of a
     `State` register. Otherwise `save`/`restore` would also spill and fill the register-window backing store
@@ -7934,7 +7939,7 @@ specify anvill's observable behaviour: a clean-room reimplementation is correct 
 | `passes/AllocateSignatures/aarch32.ll` | AArch32 (AAPCS, soft-float, Linux). |
 | `passes/AllocateSignatures/aarch64.ll` | AArch64 (AAPCS64, Linux). |
 | `passes/AllocateSignatures/sparc.ll` | SPARC32 (Linux). |
-| `passes/AllocateSignatures/sparc64.ll` | SPARC V9 (64-bit, Linux) with remill's Sleigh-based architecture (sparc64_sleigh): 8-byte argument slots; the first six integer slots are in O0-O5, floating-point arguments use the FP register of their slot (FS2k+1, FD2k, … |
+| `passes/AllocateSignatures/sparc64.ll` | SPARC V9 (64-bit, Linux) with remill's Sleigh-based architecture (sparc64): 8-byte argument slots; the first six integer slots are in O0-O5, floating-point arguments use the FP register of their slot (FS2k+1, FD2k, … |
 | `passes/AllocateSignatures/x86_32.ll` | 32-bit x86 (Linux): cdecl, stdcall, fastcall and thiscall. |
 | `passes/AllocateSignatures/x86_64_sysv.ll` | Calling-convention allocation for x86-64 System V (Linux), as computed by FunctionDecl::Create for each declared function: the location of every parameter and return value, the return address, and the stack pointer after the … |
 | `passes/AllocateSignatures/x86_64_sysv_avx.ll` | x86-64 System V with AVX (--arch=amd64_avx): each XMM constraint gains a YMM variant (ApplyX86Ext), so 256-bit vectors are passed and returned in YMM registers while smaller values keep the XMM names. |
@@ -7994,7 +7999,7 @@ specify anvill's observable behaviour: a clean-room reimplementation is correct 
 | `lifter/arch/sparc32_delay_slot.textproto` | SPARC32 leaf function whose addition is in the delay slot of `retl`. |
 | `lifter/arch/sparc64_branch.textproto` | SPARC V9 conditional branch with a delay slot that is not annulled: the `mov 20` in the delay slot executes on both paths, so the result is 20 when x == 0 and 10 otherwise. |
 | `lifter/arch/sparc64_call.textproto` | SPARC V9 function with a register window: `save` makes the caller's O registers the callee's I registers, the call's argument is computed in its delay slot, and `restore` both pops the window and computes the result (g(a + 1) … |
-| `lifter/arch/sparc64_leaf.textproto` | SPARC V9 (64-bit) leaf function, lifted with remill's Sleigh-based `sparc64_sleigh` architecture: the 64-bit addition in the delay slot of `retl` is part of the same decoded instruction. |
+| `lifter/arch/sparc64_leaf.textproto` | SPARC V9 (64-bit) leaf function, lifted with remill's Sleigh-based `sparc64` architecture: the 64-bit addition in the delay slot of `retl` is part of the same decoded instruction. |
 | `lifter/arch/x86_cdecl.textproto` | 32-bit x86 cdecl with a type-only prototype: the allocator puts both arguments on the stack in 4-byte slots ([ESP + 4], [ESP + 8]) and the result in EAX; the caller pops the arguments (ESP + 4 after the return). |
 | `lifter/arch/x86_fastcall.textproto` | 32-bit x86 fastcall: the first two 32-bit arguments are in ECX and EDX, the third is on the stack at [ESP + 4], and the callee pops it (`ret 4`, ESP + 8 after the return). |
 | `lifter/basic/increment.textproto` | `int inc(int x) { return x + 1; }` with an explicit-location prototype (EDI → EAX): the end-to-end example of §10.10. |
