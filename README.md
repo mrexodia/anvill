@@ -26,7 +26,7 @@ If you are experiencing undocumented problems with Anvill then ask for help in t
 
 ## Supported Platforms
 
-Anvill is supported on Linux and macOS. It is built against [LLVMParty's Remill](https://github.com/LLVMParty/remill), branch `sparc-sleigh` (a submodule in `dependencies/remill`; it adds a Sleigh-based SPARC64 and SPARC fixes on top of `master`) and LLVM 19 or newer.
+Anvill is supported on Linux and macOS. It is built against [LLVMParty's Remill](https://github.com/LLVMParty/remill), branch `sparc-sleigh-rebased` (a submodule in `dependencies/remill`; it adds a Sleigh-based SPARC64 and SPARC fixes on top of `master`) and LLVM 19 or newer.
 
 ## Dependencies
 
