@@ -322,9 +322,10 @@ llvm::ErrorOr<unsigned> X86_FastCall::BindParameters(
 
   // The first two arguments that are integers of at most 32 bits or
   // pointers, from left to right, are passed in ECX and EDX; all other
-  // arguments go on the stack. A hidden pointer to a return value that is
-  // returned in memory is the first such argument. (Previously every
-  // argument was placed on the stack.)
+  // arguments go on the stack. (Previously every argument was placed on the
+  // stack.) A pointer to a return value that is returned in memory, hidden
+  // or an explicit `sret` parameter, is passed on the stack and does not use
+  // a register: it is the first stack argument.
   static const char *const kArgRegs[] = {"ECX", "EDX"};
   auto next_arg_reg = 0u;
 
@@ -333,7 +334,9 @@ llvm::ErrorOr<unsigned> X86_FastCall::BindParameters(
 
     decl.name = "__struct_ret_ptr";
     decl.type = llvm::PointerType::get(function.getContext(), 0);
-    decl.reg = arch->RegisterByName(kArgRegs[next_arg_reg++]);
+    decl.mem_offset = static_cast<int64_t>(stack_offset);
+    decl.mem_reg = esp_reg;
+    stack_offset += 4u;
   }
 
   for (auto &argument : function.args()) {
@@ -341,7 +344,7 @@ llvm::ErrorOr<unsigned> X86_FastCall::BindParameters(
 
     declaration.type = argument.getType();
 
-    if (next_arg_reg < 2u) {
+    if (next_arg_reg < 2u && !argument.hasStructRetAttr()) {
       if (auto part = X86RegisterPartFor(declaration.type,
                                          kArgRegs[next_arg_reg]);
           !part.empty()) {

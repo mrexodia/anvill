@@ -333,14 +333,18 @@ llvm::ErrorOr<unsigned> X86_ThisCall::BindParameters(
     stack_offset += 4u;
   }
 
+  // `this`, the first argument that is not an explicit `sret` result
+  // pointer, is passed in ECX. (Previously it was placed on the stack.) An
+  // explicit `sret` parameter (which may come before `this`) is passed on
+  // the stack, like a hidden one.
+  auto this_assigned = false;
   for (auto &argument : function.args()) {
     auto &declaration = parameter_declarations.emplace_back();
 
     declaration.type = argument.getType();
 
-    // The first argument (`this`) is passed in ECX. (Previously it was
-    // placed on the stack.)
-    if (!argument.getArgNo()) {
+    if (!this_assigned && !argument.hasStructRetAttr()) {
+      this_assigned = true;
       if (auto part = X86RegisterPartFor(declaration.type, "ECX");
           !part.empty()) {
         declaration.reg = arch->RegisterByName(part);

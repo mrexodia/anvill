@@ -13,3 +13,4 @@ declare void @no_split_after_stack(i32 %a, i32 %b, i32 %c, i64 %d, i32 %e, i64 %
 declare { i8, i8 } @small_struct(i8 %a, i16 %b)
 declare void @sret(ptr sret({ i32, i32 }) %out, i32 %x)
 declare float @float_result(float %a, float %b)
+declare <4 x i32> @vector128_ret(i32 %a)

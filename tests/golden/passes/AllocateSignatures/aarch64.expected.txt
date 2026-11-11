@@ -135,3 +135,14 @@
   return address: X30 : i64
   stack pointer on return: SP + 0
 
+@hva { <2 x i64>, <2 x i64> } ({ <2 x i64>, <2 x i64> }, <4 x i32>) cc 0
+  abi type: { <2 x i64>, <2 x i64> } (<2 x i64>, <2 x i64>, <4 x i32>)
+  calling convention: 0
+  param a0: Q0 : <2 x i64>
+  param a1: Q1 : <2 x i64>
+  param b: Q2 : <4 x i32>
+  return: Q0 : <2 x i64>
+  return: Q1 : <2 x i64>
+  return address: X30 : i64
+  stack pointer on return: SP + 0
+

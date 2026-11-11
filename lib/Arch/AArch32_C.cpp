@@ -163,9 +163,10 @@ AArch32_C::BindReturnValues(llvm::Function &function, bool &injected_sret,
   }
 
   // Fundamental types of at most 8 bytes (including 64-bit vectors) are
-  // returned in R0 or R0:R1.
-  if (!is_aggregate && size <= 8u) {
-    const char *names[] = {"R0", "R1"};
+  // returned in R0 or R0:R1, and 128-bit short vectors in R0-R3.
+  if (!is_aggregate &&
+      (size <= 8u || (ret_type->isVectorTy() && size == 16u))) {
+    const char *names[] = {"R0", "R1", "R2", "R3"};
     auto i = 0u;
     for (auto word : WordsOf(dl, ret_type)) {
       auto &decl = ret_values.emplace_back();

@@ -99,3 +99,14 @@
   return address: LR : i32
   stack pointer on return: SP + 0
 
+@vector128_ret <4 x i32> (i32) cc 0
+  abi type: { i32, i32, i32, i32 } (i32)
+  calling convention: 0
+  param a: R0 : i32
+  return: R0 : i32
+  return: R1 : i32
+  return: R2 : i32
+  return: R3 : i32
+  return address: LR : i32
+  stack pointer on return: SP + 0
+

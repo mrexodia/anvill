@@ -18,4 +18,6 @@ declare x86_fastcallcc i32 @fastcall_mixed(i64 %a, i8 %b, double %c, ptr %d, i32
 declare x86_fastcallcc { i32, double } @fastcall_ret_struct(i32 %a, i32 %b)
 declare x86_thiscallcc { i32, double } @thiscall_ret_struct(ptr %this, i16 %a)
 declare x86_stdcallcc { i32, double } @stdcall_ret_struct(i32 %a)
+declare x86_fastcallcc void @fastcall_explicit_sret(ptr sret({ i32, i32, i32 }) %out, i32 %a, i32 %b)
+declare x86_thiscallcc void @thiscall_explicit_sret(ptr sret({ i32, i32, i32 }) %out, ptr %this, i32 %a)
 declare i32 @cdecl_small_slots(i8 %a, i16 %b, i64 %c, x86_fp80 %d, i8 %e)

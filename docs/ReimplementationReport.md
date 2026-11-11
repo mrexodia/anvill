@@ -906,19 +906,25 @@ Implements the System V AMD64 psABI, section 3.2.3.
 Scalars and vectors use AllocationState with the parameter pool `[DIL/DI/EDI/RDI]`, `[SIL/SI/ESI/RSI]`,
 `[DL/DX/EDX/RDX]`, `[CL/CX/ECX/RCX]`, `[R8B/R8W/R8D/R8]`, `[R9B/R9W/R9D/R9]` (kTypeIntegral), then `XMM0..XMM7`
 (kTypeFloatOrVec, kMaxBit128; with AVX/AVX512 each gains a YMM/ZMM variant through `ApplyX86Ext`, so 256-bit
-vectors use `YMM<n>`). `x86_fp80` and `fp128` arguments are never put in registers (class X87/MEMORY).
+vectors use `YMM<n>`). `x86_fp80` arguments are never put in registers (class X87, passed in memory); `fp128`
+(`__float128`, class SSE+SSEUP) uses an XMM register like a vector. (**Fixed:** `fp128` arguments were also put
+on the stack, and an `fp128` result was an error.)
 
 **Aggregates and 65–128-bit integers** are classified eightbyte by eightbyte (`ClassifyEightbytes`):
 
 1. If the allocation size is > 16 bytes → MEMORY.
 2. Flatten to scalar leaves with their byte offsets (structs by `StructLayout`, arrays by element size). An
-   `i65..i128` is two `i64` leaves. A leaf that is `x86_fp80`, `fp128`, a vector, or an integer wider than 128
-   bits → MEMORY.
+   `i65..i128` is two `i64` leaves. An 8-byte vector (`__m64`) is one SSE leaf; a 16-byte vector (`__m128`) is
+   one leaf covering two eightbytes (SSE and SSEUP), i.e. a whole XMM register. A leaf that is `x86_fp80`,
+   `fp128`, another vector, or an integer wider than 128 bits → MEMORY. (**Fixed:** every vector member forced
+   the aggregate to memory, so `{ <2 x i64> }` was passed on the stack and returned through a hidden pointer
+   instead of in XMM0.)
 3. For each eightbyte that contains leaves: INTEGER if any leaf is an integer or pointer, else SSE. Fully padded
    eightbytes are dropped.
 4. The transfer type of an INTEGER eightbyte is the pointer itself if it is a single pointer, else the smallest of
    `i8/i16/i32/i64` covering the bytes used (`{i32, i32}` → one `i64`; `{i8, i8}` → `i16`; `{i32, float}` → `i64`).
-   An SSE eightbyte is `float` (one float), `<2 x float>` (two floats) or `double`.
+   An SSE eightbyte is `float` (one float), `<2 x float>` (two floats), the vector type (a vector member; a
+   16-byte vector is a single 128-bit register transfer) or `double`.
 5. `AssignEightbytes` gives each eightbyte the next free GPR (INTEGER) or XMM register (SSE), in pool order. If any
    eightbyte does not get a register, **none** do and the value goes to memory (the state is unchanged).
 
@@ -931,7 +937,7 @@ Results:
 
 - void → none. `iN`, N ≤ 64 → `RAX:iN`; N ≤ 128 → `RAX:i64, RDX:i64`; wider → RVO (**changed:** 129–192-bit
   integers used to be split over RAX, RDX, RCX, which is the LLVM-IR-level convention, not the C one).
-- `ptr` → `RAX`; `float`/`double` → `XMM0`; `x86_mmx` (LLVM < 20) → `MM0`; `x86_fp80` → `ST0`.
+- `ptr` → `RAX`; `float`/`double`/`fp128` → `XMM0`; `x86_mmx` (LLVM < 20) → `MM0`; `x86_fp80` → `ST0`.
 - Aggregates: an aggregate whose only member (through single-member structs/arrays) is `x86_fp80` → `ST0`
   (class X87). Otherwise classify as above and assign INTEGER eightbytes to RAX then RDX, SSE eightbytes to XMM0
   then XMM1 (`{i64, double}` → `RAX:i64, XMM0:double`). MEMORY → RVO.
@@ -958,9 +964,13 @@ is the first stack argument (`[ESP+4] : ptr`, 4 bytes).
 
 - **fastcall**: the first two arguments that are integers of at most 32 bits or pointers, left to right, go in ECX
   then EDX (`CL`/`CX`/`ECX` by size); all others, including `i64`, go on the stack, and a later small integer
-  can still take a free register. A hidden RVO pointer is the first such argument (ECX).
-- **thiscall**: the first argument (`this`) goes in ECX if it is an integer of at most 32 bits or a pointer. A
-  hidden RVO pointer is the first *stack* argument.
+  can still take a free register. A result pointer, hidden or an explicit `sret` parameter, is passed on the
+  stack (the first stack argument, `[ESP+4]`) and does not use a register. (**Fixed:** a hidden result pointer
+  took ECX and pushed the first argument to EDX.)
+- **thiscall**: `this`, the first argument that is not an explicit `sret` parameter, goes in ECX if it is an
+  integer of at most 32 bits or a pointer. A hidden or explicit `sret` result pointer is passed on the stack
+  (first stack argument). (**Fixed:** with an explicit `sret` before `this`, the result pointer took ECX and
+  `this` went on the stack.)
 - (**Fixed:** the fastcall and thiscall register pools existed but were never consulted, so every argument was
   taken from the stack.)
 
@@ -975,8 +985,11 @@ NSRN (next V register), both 0..8:
 
 - `half`/`bfloat`/`float`/`double`/`fp128` and 64- or 128-bit vectors → the next V register, named by size: `H<n>`
   (16 bits), `S<n>` (32), `D<n>` (64), `Q<n>` (128).
-- A homogeneous floating-point aggregate (1–4 leaves, all the same floating-point type) → consecutive V registers,
-  one per member, if they all fit; otherwise it goes on the stack and NSRN becomes 8.
+- A homogeneous floating-point aggregate (1–4 leaves, all the same floating-point type) or homogeneous
+  short-vector aggregate (1–4 leaves, all the same 64- or 128-bit vector type) → consecutive V registers, one per
+  member, if they all fit; otherwise it goes on the stack and NSRN becomes 8. (**Fixed:** short-vector aggregates
+  were not recognized, so `{ <2 x i64>, <2 x i64> }` was passed by reference and returned through X8 instead of
+  in Q0, Q1.)
 - Integers of at most 64 bits and pointers → the next X register: `W<n>` for integers of at most 32 bits, `X<n>`
   otherwise.
 - Other aggregates (and `i65..i128`) of at most 16 bytes → one or two X registers as `i64` chunks (the last chunk
@@ -1011,7 +1024,8 @@ Implements the base (soft-float) AAPCS, as used by `arm-linux-gnueabi`, without 
   as long as nothing is on the stack yet; otherwise it goes entirely on the stack (kept whole, one declaration)
   and NCRN becomes 4.
 - Results: aggregates of at most 4 bytes → `R0:i32`; non-aggregates of at most 8 bytes → `R0` or `R0:i32, R1:i32`
-  (`double` too); everything else → memory, with the address as the first argument (`__struct_ret_ptr: R0`,
+  (`double` too); 128-bit short vectors → `R0..R3` as `i32` words (**fixed:** they were returned in memory);
+  everything else → memory, with the address as the first argument (`__struct_ret_ptr: R0`,
   shifting every argument by one register) and no return value. An explicit `sret` parameter is R0 and has no
   return value. `x86_fp80`/`fp128` results are an error.
 
@@ -1111,6 +1125,8 @@ declare i256 @ret_i256(i256 %a)
 declare void @regs_exhausted(i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, { i64, i64 } %pair, i64 %f)
 declare void @aligned_stack(i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, i64 %f, i32 %g, i128 %h, x86_fp80 %i, i8 %j)
 declare <4 x float> @float_vector(<4 x float> %v, <2 x double> %w)
+declare fp128 @quad(fp128 %a, i32 %b, fp128 %c)
+declare { <2 x i64> } @vector_struct({ <2 x i64> } %a, { <2 x float>, double } %b)
 declare x86_stdcallcc i32 @stdcall_on_amd64(i32 %a, i32 %b)
 declare x86_fastcallcc i32 @fastcall_on_amd64(i32 %a, i32 %b)
 ```
@@ -1348,6 +1364,26 @@ Output (`x86_64_sysv.expected.txt`):
   return address: [RSP] : i64
   stack pointer on return: RSP + 8
 
+@quad fp128 (fp128, i32, fp128) cc 0
+  abi type: fp128 (fp128, i32, fp128)
+  calling convention: 78
+  param a: XMM0 : fp128
+  param b: EDI : i32
+  param c: XMM1 : fp128
+  return: XMM0 : fp128
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@vector_struct { <2 x i64> } ({ <2 x i64> }, { <2 x float>, double }) cc 0
+  abi type: <2 x i64> (<2 x i64>, <2 x float>, double)
+  calling convention: 78
+  param a: XMM0 : <2 x i64>
+  param b0: XMM1 : <2 x float>
+  param b1: XMM2 : double
+  return: XMM0 : <2 x i64>
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
 @stdcall_on_amd64 i32 (i32, i32) cc 64
   abi type: i32 (i32, i32)
   calling convention: 78
@@ -1429,6 +1465,8 @@ declare x86_fastcallcc i32 @fastcall_mixed(i64 %a, i8 %b, double %c, ptr %d, i32
 declare x86_fastcallcc { i32, double } @fastcall_ret_struct(i32 %a, i32 %b)
 declare x86_thiscallcc { i32, double } @thiscall_ret_struct(ptr %this, i16 %a)
 declare x86_stdcallcc { i32, double } @stdcall_ret_struct(i32 %a)
+declare x86_fastcallcc void @fastcall_explicit_sret(ptr sret({ i32, i32, i32 }) %out, i32 %a, i32 %b)
+declare x86_thiscallcc void @thiscall_explicit_sret(ptr sret({ i32, i32, i32 }) %out, ptr %this, i32 %a)
 declare i32 @cdecl_small_slots(i8 %a, i16 %b, i64 %c, x86_fp80 %d, i8 %e)
 ```
 
@@ -1524,9 +1562,9 @@ Output (`x86_32.expected.txt`):
 @fastcall_ret_struct { i32, double } (i32, i32) cc 65
   abi type: ptr (ptr, i32, i32)
   calling convention: 65
-  param __struct_ret_ptr: ECX : ptr
-  param a: EDX : i32
-  param b: [ESP + 4] : i32
+  param __struct_ret_ptr: [ESP + 4] : ptr
+  param a: ECX : i32
+  param b: EDX : i32
   return: EAX : ptr
   return address: [ESP] : i32
   stack pointer on return: ESP + 8
@@ -1545,6 +1583,26 @@ Output (`x86_32.expected.txt`):
   abi type: ptr (ptr, i32)
   calling convention: 64
   param __struct_ret_ptr: [ESP + 4] : ptr
+  param a: [ESP + 8] : i32
+  return: EAX : ptr
+  return address: [ESP] : i32
+  stack pointer on return: ESP + 12
+
+@fastcall_explicit_sret void (ptr, i32, i32) cc 65
+  abi type: ptr (ptr, i32, i32)
+  calling convention: 65
+  param out: [ESP + 4] : ptr
+  param a: ECX : i32
+  param b: EDX : i32
+  return: EAX : ptr
+  return address: [ESP] : i32
+  stack pointer on return: ESP + 8
+
+@thiscall_explicit_sret void (ptr, ptr, i32) cc 70
+  abi type: ptr (ptr, ptr, i32)
+  calling convention: 70
+  param out: [ESP + 4] : ptr
+  param this: ECX : ptr
   param a: [ESP + 8] : i32
   return: EAX : ptr
   return address: [ESP] : i32
@@ -1580,6 +1638,7 @@ declare void @pair_alignment(i32 %a, i128 %b, { i64, i32 } %c, i64 %d, i64 %e, i
 declare <4 x float> @vectors(<4 x float> %a, <2 x float> %b)
 declare i256 @huge_int(i256 %a)
 declare void @stack_hfa(double, double, double, double, double, double, double, { double, double } %h, float %f)
+declare { <2 x i64>, <2 x i64> } @hva({ <2 x i64>, <2 x i64> } %a, <4 x i32> %b)
 ```
 
 Output (`aarch64.expected.txt`):
@@ -1721,6 +1780,17 @@ Output (`aarch64.expected.txt`):
   param f: [SP + 16] : float
   return address: X30 : i64
   stack pointer on return: SP + 0
+
+@hva { <2 x i64>, <2 x i64> } ({ <2 x i64>, <2 x i64> }, <4 x i32>) cc 0
+  abi type: { <2 x i64>, <2 x i64> } (<2 x i64>, <2 x i64>, <4 x i32>)
+  calling convention: 0
+  param a0: Q0 : <2 x i64>
+  param a1: Q1 : <2 x i64>
+  param b: Q2 : <4 x i32>
+  return: Q0 : <2 x i64>
+  return: Q1 : <2 x i64>
+  return address: X30 : i64
+  stack pointer on return: SP + 0
 ```
 
 #### AArch32 (base AAPCS)
@@ -1738,6 +1808,7 @@ declare void @no_split_after_stack(i32 %a, i32 %b, i32 %c, i64 %d, i32 %e, i64 %
 declare { i8, i8 } @small_struct(i8 %a, i16 %b)
 declare void @sret(ptr sret({ i32, i32 }) %out, i32 %x)
 declare float @float_result(float %a, float %b)
+declare <4 x i32> @vector128_ret(i32 %a)
 ```
 
 Output (`aarch32.expected.txt`):
@@ -1841,6 +1912,17 @@ Output (`aarch32.expected.txt`):
   param a: R0 : float
   param b: R1 : float
   return: R0 : float
+  return address: LR : i32
+  stack pointer on return: SP + 0
+
+@vector128_ret <4 x i32> (i32) cc 0
+  abi type: { i32, i32, i32, i32 } (i32)
+  calling convention: 0
+  param a: R0 : i32
+  return: R0 : i32
+  return: R1 : i32
+  return: R2 : i32
+  return: R3 : i32
   return address: LR : i32
   stack pointer on return: SP + 0
 ```
@@ -8099,6 +8181,7 @@ reimplementation that wants the original output must reproduce the "old" side of
 | 16a | AArch64: a ninth integer argument and `i128` go to V registers; `sret` in X0; no HFAs; large aggregates rejected. | Fixed | `AllocateSignatures/aarch64.ll`, `lifter/arch/aarch64_indirect_result` |
 | 16b | SPARC32: `double` arguments always on the stack; aggregate results rejected; register names no longer exist in remill. | Fixed | `AllocateSignatures/sparc.ll` |
 | 16d | SPARC64: old register names, not slot-based, fixed stack offset 2227. | Fixed (V9 ABI rewrite) | `AllocateSignatures/sparc64.ll` |
+| 16f | Found in review of the rewritten allocators: AMD64 `fp128` arguments on the stack and `fp128` results an error; AMD64 aggregates with vector members (`{ <2 x i64> }`) in memory; AArch32 128-bit vector results in memory; fastcall hidden result pointer in ECX; thiscall `this` on the stack after an explicit `sret`; AArch64 short-vector aggregates (HVAs) by reference. | Fixed | `AllocateSignatures/x86_64_sysv.ll` (`quad`, `vector_struct`), `aarch32.ll` (`vector128_ret`), `x86_32.ll` (`fastcall_ret_struct`, `*_explicit_sret`), `aarch64.ll` (`hva`) |
 | 16c | x86-32 cdecl returns small aggregates in EAX:EDX (MSVC style) even on Linux, where the i386 psABI uses memory. | Kept | `AllocateSignatures/x86_32.ll` |
 | | **Types (§7)** | | |
 | 17 | The encoder always uses unsigned letters; `d`/`D` and `w`/`W` sizes disagree with TypeEncoding.md. | Fixed (docs corrected; unsigned letters kept, documented) | `docs/TypeEncoding.md` |

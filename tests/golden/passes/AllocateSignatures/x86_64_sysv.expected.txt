@@ -228,6 +228,26 @@
   return address: [RSP] : i64
   stack pointer on return: RSP + 8
 
+@quad fp128 (fp128, i32, fp128) cc 0
+  abi type: fp128 (fp128, i32, fp128)
+  calling convention: 78
+  param a: XMM0 : fp128
+  param b: EDI : i32
+  param c: XMM1 : fp128
+  return: XMM0 : fp128
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@vector_struct { <2 x i64> } ({ <2 x i64> }, { <2 x float>, double }) cc 0
+  abi type: <2 x i64> (<2 x i64>, <2 x float>, double)
+  calling convention: 78
+  param a: XMM0 : <2 x i64>
+  param b0: XMM1 : <2 x float>
+  param b1: XMM2 : double
+  return: XMM0 : <2 x i64>
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
 @stdcall_on_amd64 i32 (i32, i32) cc 64
   abi type: i32 (i32, i32)
   calling convention: 78

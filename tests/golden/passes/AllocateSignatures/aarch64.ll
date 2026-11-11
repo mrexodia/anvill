@@ -15,3 +15,4 @@ declare void @pair_alignment(i32 %a, i128 %b, { i64, i32 } %c, i64 %d, i64 %e, i
 declare <4 x float> @vectors(<4 x float> %a, <2 x float> %b)
 declare i256 @huge_int(i256 %a)
 declare void @stack_hfa(double, double, double, double, double, double, double, { double, double } %h, float %f)
+declare { <2 x i64>, <2 x i64> } @hva({ <2 x i64>, <2 x i64> } %a, <4 x i32> %b)

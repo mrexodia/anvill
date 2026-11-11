@@ -31,7 +31,9 @@ namespace {
 //    V0-V7, named by size: `H<n>` (16 bits), `S<n>` (32), `D<n>` (64),
 //    `Q<n>` (128).
 //  - A homogeneous floating-point aggregate (HFA: 1-4 members of the same
-//    floating-point type) uses consecutive SIMD registers, one per member.
+//    floating-point type) or homogeneous short-vector aggregate (HVA: 1-4
+//    members of the same 64- or 128-bit vector type) uses consecutive SIMD
+//    registers, one per member.
 //  - Other aggregates of at most 16 bytes use one or two general purpose
 //    registers (an even-numbered pair if their alignment is 16); larger
 //    aggregates are passed by reference, i.e. as a pointer.
@@ -75,23 +77,6 @@ static void FlattenLeaves(llvm::Type *type,
   }
 }
 
-// Returns the member type of a homogeneous floating-point aggregate, and the
-// number of members, or `nullptr` if `type` is not an HFA.
-static std::pair<llvm::Type *, unsigned> GetHFA(llvm::Type *type) {
-  std::vector<llvm::Type *> leaves;
-  FlattenLeaves(type, leaves);
-  if (leaves.empty() || leaves.size() > 4u ||
-      !leaves.front()->isFloatingPointTy() || leaves.front()->isX86_FP80Ty()) {
-    return {nullptr, 0u};
-  }
-  for (auto leaf : leaves) {
-    if (leaf != leaves.front()) {
-      return {nullptr, 0u};
-    }
-  }
-  return {leaves.front(), static_cast<unsigned>(leaves.size())};
-}
-
 static bool IsSIMDScalar(llvm::Type *type) {
   if (type->isHalfTy() || type->isBFloatTy() || type->isFloatTy() ||
       type->isDoubleTy() || type->isFP128Ty()) {
@@ -103,6 +88,31 @@ static bool IsSIMDScalar(llvm::Type *type) {
   }
   return false;
 }
+
+// Returns the member type of a homogeneous floating-point aggregate (HFA) or
+// homogeneous short-vector aggregate (HVA: members that are all the same
+// 64- or 128-bit vector), and the number of members, or `nullptr` if `type`
+// is neither. Both are passed and returned in SIMD registers.
+static std::pair<llvm::Type *, unsigned> GetHFA(llvm::Type *type) {
+  std::vector<llvm::Type *> leaves;
+  FlattenLeaves(type, leaves);
+  if (leaves.empty() || leaves.size() > 4u) {
+    return {nullptr, 0u};
+  }
+  const auto member = leaves.front();
+  const auto is_short_vector = member->isVectorTy() && IsSIMDScalar(member);
+  if (!is_short_vector &&
+      (!member->isFloatingPointTy() || member->isX86_FP80Ty())) {
+    return {nullptr, 0u};
+  }
+  for (auto leaf : leaves) {
+    if (leaf != leaves.front()) {
+      return {nullptr, 0u};
+    }
+  }
+  return {leaves.front(), static_cast<unsigned>(leaves.size())};
+}
+
 
 static std::string SIMDRegisterName(llvm::Type *type, unsigned num) {
   const auto bits = type->getPrimitiveSizeInBits().getFixedValue();

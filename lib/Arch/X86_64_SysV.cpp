@@ -132,7 +132,9 @@ struct Eightbyte {
 
 // Visits the scalar leaves of `type` with their byte offsets. Returns false
 // if a leaf forces the whole value into memory (x87 `long double`, `fp128`,
-// vectors inside aggregates, or anything unknown).
+// vectors other than 8 or 16 bytes, or anything unknown). An 8-byte vector
+// (`__m64`) is one SSE eightbyte; a 16-byte vector (`__m128`) is an SSE
+// eightbyte followed by an SSEUP one, i.e. a whole XMM register.
 static bool
 VisitLeaves(const llvm::DataLayout &dl, llvm::Type *type, uint64_t offset,
             std::vector<std::pair<uint64_t, llvm::Type *>> &leaves) {
@@ -172,6 +174,13 @@ VisitLeaves(const llvm::DataLayout &dl, llvm::Type *type, uint64_t offset,
              type->isDoubleTy()) {
     leaves.emplace_back(offset, type);
     return true;
+  } else if (auto vt = llvm::dyn_cast<llvm::FixedVectorType>(type)) {
+    const auto size = dl.getTypeAllocSize(vt).getFixedValue();
+    if (size == 8u || size == 16u) {
+      leaves.emplace_back(offset, type);
+      return true;
+    }
+    return false;
   } else {
     return false;
   }
@@ -198,7 +207,9 @@ static llvm::Type *IntegerOfBytes(llvm::LLVMContext &context, uint64_t bytes) {
 //  - INTEGER eightbytes are transferred as the smallest of i8/i16/i32/i64
 //    that covers the bytes used in the eightbyte (`{i32, i32}` is one `i64`).
 //  - SSE eightbytes are transferred as `float` (one float at the start),
-//    `<2 x float>` (two floats), or `double` (anything else).
+//    `<2 x float>` (two floats), the vector type (a vector member), or
+//    `double` (anything else). A 16-byte vector member covers both
+//    eightbytes (SSE and SSEUP), and is transferred whole in one register.
 static std::optional<std::vector<Eightbyte>>
 ClassifyEightbytes(const llvm::DataLayout &dl, llvm::Type *type) {
   const auto size = dl.getTypeAllocSize(type).getFixedValue();
@@ -243,7 +254,8 @@ ClassifyEightbytes(const llvm::DataLayout &dl, llvm::Type *type) {
                      : IntegerOfBytes(context, end);
     } else {
       out.sse = true;
-      if (num_leaves == 1 && (first->isFloatTy() || first->isDoubleTy())) {
+      if (num_leaves == 1 &&
+          (first->isFloatTy() || first->isDoubleTy() || first->isVectorTy())) {
         out.type = first;
       } else if (num_leaves == 2 && num_floats == 2) {
         out.type =
@@ -291,7 +303,8 @@ AssignEightbytes(AllocationState &state, const std::vector<Eightbyte> &ebs,
       const SizeConstraint want_size = bits <= 8    ? kBit8
                                        : bits <= 16 ? kBit16
                                        : bits <= 32 ? kBit32
-                                                    : kBit64;
+                                       : bits <= 64 ? kBit64
+                                                    : kBit128;
       for (const auto &vc : rc.variants) {
         if (vc.size_constraint & want_size) {
           auto &decl = ret.emplace_back();
@@ -474,9 +487,10 @@ X86_64_SysV::BindReturnValues(llvm::Function &function, bool &injected_sret,
       return llvm::Error::success();
     }
 
-    // Floats and doubles always go in `xmm0`.
+    // Floats, doubles and `__float128` always go in `xmm0`.
     case llvm::Type::FloatTyID:
-    case llvm::Type::DoubleTyID: {
+    case llvm::Type::DoubleTyID:
+    case llvm::Type::FP128TyID: {
       auto &value_declaration = ret_values.emplace_back();
       value_declaration.reg = arch->RegisterByName("XMM0");
       value_declaration.type = ret_type;
@@ -622,7 +636,10 @@ llvm::Error X86_64_SysV::BindParameters(
       if (auto ebs = ClassifyEightbytes(dl, param_type)) {
         allocation = AssignEightbytes(alloc_param, *ebs, 6u, 8u);
       }
-    } else if (!param_type->isX86_FP80Ty() && !param_type->isFP128Ty()) {
+    } else if (!param_type->isX86_FP80Ty()) {
+
+      // x87 `long double` is of class X87, which is passed in memory. `fp128`
+      // (`__float128`) is of class SSE+SSEUP and uses an XMM register.
       allocation = alloc_param.TryRegisterAllocate(*param_type);
     }
 
