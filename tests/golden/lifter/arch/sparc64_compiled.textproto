@@ -1,0 +1,195 @@
+# Compiled C on SPARC64: the functions of sparc_compiled.c (shifts and logic,
+# multiply and divide through %y, sign/zero-extending loads and narrow
+# stores, float<->int conversion, float arithmetic, float compare-and-branch
+# or conditional move, integer conditional move or branch, and a switch
+# lowered to compares), compiled with clang -O2 for sparcv9-linux-gnu.
+# Each optimized function should compute what the C source says.
+# (This case found two remill bugs: `sdiv` divided by the zero-extended low
+# word of its operand (Ghidra spec, now patched), so `mul_div` was wrong for
+# negative divisors; and the `movl` in the delay slot of `retl` in
+# `float_less` skipped the return on the path that moved, as p-code blocks
+# ending at a local label left the instruction instead of falling through.)
+#   tests/golden/tools/assemble.py --no-link --triple sparcv9-linux-gnu \
+#       tests/golden/lifter/arch/sparc_compiled.c
+#   401000: 95 2a 20 03 sll %o0, 3, %o2
+#   401004: 97 3a 60 02 sra %o1, 2, %o3
+#   401008: 94 1a c0 0a xor %o3, %o2, %o2
+#   40100c: 90 2a 00 09 andn %o0, %o1, %o0
+#   401010: 90 12 80 08 or %o2, %o0, %o0
+#   401014: 81 c3 e0 08 retl
+#   401018: 91 3a 20 00 sra %o0, 0, %o0
+#   40101c: 92 0a 60 1f and %o1, 31, %o1
+#   401020: 91 32 00 09 srl %o0, %o1, %o0
+#   401024: 81 c3 e0 08 retl
+#   401028: 91 32 20 00 srl %o0, 0, %o0
+#   40102c: 95 3a 20 1f sra %o0, 31, %o2
+#   401030: 96 4a 40 08 mulx %o1, %o0, %o3
+#   401034: 81 80 00 0a wr %g0, %o2, %y
+#   401038: 94 7a 00 09 sdiv %o0, %o1, %o2
+#   40103c: 96 02 80 0b add %o2, %o3, %o3
+#   401040: 92 4a 80 09 mulx %o2, %o1, %o1
+#   401044: 90 22 00 09 sub %o0, %o1, %o0
+#   401048: 90 02 c0 08 add %o3, %o0, %o0
+#   40104c: 81 c3 e0 08 retl
+#   401050: 91 3a 20 00 sra %o0, 0, %o0
+#   401054: 81 80 00 00 wr %g0, %g0, %y
+#   401058: 90 72 00 09 udiv %o0, %o1, %o0
+#   40105c: 81 c3 e0 08 retl
+#   401060: 91 32 20 00 srl %o0, 0, %o0
+#   401064: d0 4a 20 01 ldsb [%o0+1], %o0
+#   401068: d2 52 60 04 ldsh [%o1+4], %o1
+#   40106c: d4 0a a0 03 ldub [%o2+3], %o2
+#   401070: 90 02 40 08 add %o1, %o0, %o0
+#   401074: 90 02 00 0a add %o0, %o2, %o0
+#   401078: 81 c3 e0 08 retl
+#   40107c: 91 3a 20 00 sra %o0, 0, %o0
+#   401080: d4 2a 00 00 stb %o2, [%o0]
+#   401084: 91 32 a0 08 srl %o2, 8, %o0
+#   401088: 81 c3 e0 08 retl
+#   40108c: d0 32 60 02 sth %o0, [%o1+2]
+#   401090: 9c 03 bf 70 add %sp, -144, %sp
+#   401094: 81 a0 1a 21 fstoi %f1, %f0
+#   401098: c1 23 a8 8b st %f0, [%sp+2187]
+#   40109c: d0 43 a8 8b ldsw [%sp+2187], %o0
+#   4010a0: 81 c3 e0 08 retl
+#   4010a4: 9c 03 a0 90 add %sp, 144, %sp
+#   4010a8: 9c 03 bf 70 add %sp, -144, %sp
+#   4010ac: d0 23 a8 8b st %o0, [%sp+2187]
+#   4010b0: c1 03 a8 8b ld [%sp+2187], %f0
+#   4010b4: 81 a0 19 00 fitod %f0, %f0
+#   4010b8: 81 c3 e0 08 retl
+#   4010bc: 9c 03 a0 90 add %sp, 144, %sp
+#   4010c0: 9c 03 bf 70 add %sp, -144, %sp
+#   4010c4: 81 a0 49 23 fmuls %f1, %f3, %f0
+#   4010c8: 81 a0 08 21 fadds %f0, %f1, %f0
+#   4010cc: 81 a0 1a 20 fstoi %f0, %f0
+#   4010d0: c1 23 a8 8b st %f0, [%sp+2187]
+#   4010d4: d0 43 a8 8b ldsw [%sp+2187], %o0
+#   4010d8: 81 c3 e0 08 retl
+#   4010dc: 9c 03 a0 90 add %sp, 144, %sp
+#   4010e0: 90 10 20 14 mov 20, %o0
+#   4010e4: 81 a8 4a 23 fcmps %f1, %f3
+#   4010e8: 81 c3 e0 08 retl
+#   4010ec: 91 61 20 0a movl %fcc0, 10, %o0
+#   4010f0: 80 a2 00 09 cmp %o0, %o1
+#   4010f4: 93 66 80 08 movg %icc, %o0, %o1
+#   4010f8: 81 c3 e0 08 retl
+#   4010fc: 91 3a 60 00 sra %o1, 0, %o0
+#   401100: 80 a2 20 04 cmp %o0, 4
+#   401104: 14 48 00 0b bg %icc, 11
+#   401108: 01 00 00 00 nop
+#   40110c: 80 a2 20 00 cmp %o0, 0
+#   401110: 02 48 00 14 be %icc, 20
+#   401114: 01 00 00 00 nop
+#   401118: 80 a2 20 01 cmp %o0, 1
+#   40111c: 12 48 00 0e bne %icc, 14
+#   401120: 01 00 00 00 nop
+#   401124: 90 10 20 16 mov 22, %o0
+#   401128: 81 c3 e0 08 retl
+#   40112c: 91 32 20 00 srl %o0, 0, %o0
+#   401130: 80 a2 20 05 cmp %o0, 5
+#   401134: 02 48 00 0e be %icc, 14
+#   401138: 01 00 00 00 nop
+#   40113c: 80 a2 20 09 cmp %o0, 9
+#   401140: 12 48 00 05 bne %icc, 5
+#   401144: 01 00 00 00 nop
+#   401148: 90 10 20 2c mov 44, %o0
+#   40114c: 81 c3 e0 08 retl
+#   401150: 91 32 20 00 srl %o0, 0, %o0
+#   401154: 90 10 20 37 mov 55, %o0
+#   401158: 81 c3 e0 08 retl
+#   40115c: 91 32 20 00 srl %o0, 0, %o0
+#   401160: 90 10 20 0b mov 11, %o0
+#   401164: 81 c3 e0 08 retl
+#   401168: 91 32 20 00 srl %o0, 0, %o0
+#   40116c: 90 10 20 21 mov 33, %o0
+#   401170: 81 c3 e0 08 retl
+#   401174: 91 32 20 00 srl %o0, 0, %o0
+# RUN: --add_names
+arch: ARCH_SPARC64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { base: BT_I32 } arguments { base: BT_I32 } } }
+  }
+}
+functions {
+  entry_address: 0x40101c
+  callable {
+    type { function { return_type { base: BT_U32 } arguments { base: BT_U32 } arguments { base: BT_U32 } } }
+  }
+}
+functions {
+  entry_address: 0x40102c
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { base: BT_I32 } arguments { base: BT_I32 } } }
+  }
+}
+functions {
+  entry_address: 0x401054
+  callable {
+    type { function { return_type { base: BT_U32 } arguments { base: BT_U32 } arguments { base: BT_U32 } } }
+  }
+}
+functions {
+  entry_address: 0x401064
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { pointer { pointee { base: BT_I8 } } } arguments { pointer { pointee { base: BT_I16 } } } arguments { pointer { pointee { base: BT_U8 } } } } }
+  }
+}
+functions {
+  entry_address: 0x401080
+  callable {
+    type { function { return_type { base: BT_VOID } arguments { pointer { pointee { base: BT_I8 } } } arguments { pointer { pointee { base: BT_I16 } } } arguments { base: BT_I32 } } }
+  }
+}
+functions {
+  entry_address: 0x401090
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { base: BT_FL32 } } }
+  }
+}
+functions {
+  entry_address: 0x4010a8
+  callable {
+    type { function { return_type { base: BT_FL64 } arguments { base: BT_I32 } } }
+  }
+}
+functions {
+  entry_address: 0x4010c0
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { base: BT_FL32 } arguments { base: BT_FL32 } } }
+  }
+}
+functions {
+  entry_address: 0x4010e0
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { base: BT_FL32 } arguments { base: BT_FL32 } } }
+  }
+}
+functions {
+  entry_address: 0x4010f0
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { base: BT_I32 } arguments { base: BT_I32 } } }
+  }
+}
+functions {
+  entry_address: 0x401100
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { base: BT_I32 } } }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x95\x2a\x20\x03\x97\x3a\x60\x02\x94\x1a\xc0\x0a\x90\x2a\x00\x09\x90\x12\x80\x08\x81\xc3\xe0\x08\x91\x3a\x20\x00\x92\x0a\x60\x1f\x91\x32\x00\x09\x81\xc3\xe0\x08\x91\x32\x20\x00\x95\x3a\x20\x1f\x96\x4a\x40\x08\x81\x80\x00\x0a\x94\x7a\x00\x09\x96\x02\x80\x0b\x92\x4a\x80\x09\x90\x22\x00\x09\x90\x02\xc0\x08\x81\xc3\xe0\x08\x91\x3a\x20\x00\x81\x80\x00\x00\x90\x72\x00\x09\x81\xc3\xe0\x08\x91\x32\x20\x00\xd0\x4a\x20\x01\xd2\x52\x60\x04\xd4\x0a\xa0\x03\x90\x02\x40\x08\x90\x02\x00\x0a\x81\xc3\xe0\x08\x91\x3a\x20\x00\xd4\x2a\x00\x00\x91\x32\xa0\x08\x81\xc3\xe0\x08\xd0\x32\x60\x02\x9c\x03\xbf\x70\x81\xa0\x1a\x21\xc1\x23\xa8\x8b\xd0\x43\xa8\x8b\x81\xc3\xe0\x08\x9c\x03\xa0\x90\x9c\x03\xbf\x70\xd0\x23\xa8\x8b\xc1\x03\xa8\x8b\x81\xa0\x19\x00\x81\xc3\xe0\x08\x9c\x03\xa0\x90\x9c\x03\xbf\x70\x81\xa0\x49\x23\x81\xa0\x08\x21\x81\xa0\x1a\x20\xc1\x23\xa8\x8b\xd0\x43\xa8\x8b\x81\xc3\xe0\x08\x9c\x03\xa0\x90\x90\x10\x20\x14\x81\xa8\x4a\x23\x81\xc3\xe0\x08\x91\x61\x20\x0a\x80\xa2\x00\x09\x93\x66\x80\x08\x81\xc3\xe0\x08\x91\x3a\x60\x00\x80\xa2\x20\x04\x14\x48\x00\x0b\x01\x00\x00\x00\x80\xa2\x20\x00\x02\x48\x00\x14\x01\x00\x00\x00\x80\xa2\x20\x01\x12\x48\x00\x0e\x01\x00\x00\x00\x90\x10\x20\x16\x81\xc3\xe0\x08\x91\x32\x20\x00\x80\xa2\x20\x05\x02\x48\x00\x0e\x01\x00\x00\x00\x80\xa2\x20\x09\x12\x48\x00\x05\x01\x00\x00\x00\x90\x10\x20\x2c\x81\xc3\xe0\x08\x91\x32\x20\x00\x90\x10\x20\x37\x81\xc3\xe0\x08\x91\x32\x20\x00\x90\x10\x20\x0b\x81\xc3\xe0\x08\x91\x32\x20\x00\x90\x10\x20\x21\x81\xc3\xe0\x08\x91\x32\x20\x00" }
+symbols { name: "shifts_logic" address: 0x401000 }
+symbols { name: "shift_right" address: 0x40101c }
+symbols { name: "mul_div" address: 0x40102c }
+symbols { name: "udiv" address: 0x401054 }
+symbols { name: "load_extend" address: 0x401064 }
+symbols { name: "store_narrow" address: 0x401080 }
+symbols { name: "float_to_int" address: 0x401090 }
+symbols { name: "int_to_double" address: 0x4010a8 }
+symbols { name: "float_math" address: 0x4010c0 }
+symbols { name: "float_less" address: 0x4010e0 }
+symbols { name: "select_max" address: 0x4010f0 }
+symbols { name: "switch_case" address: 0x401100 }

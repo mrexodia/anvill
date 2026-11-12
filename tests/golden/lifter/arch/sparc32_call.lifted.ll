@@ -8,31 +8,24 @@ target triple = "sparc-pc-linux-gnu-elf"
 
 ; Function Attrs: noinline
 define i32 @f(i32 %0) #0 !pc !0 {
-  br i1 true, label %2, label %3, !pc !0
+  br i1 true, label %sleigh_remill_instruction_function_401000.exit, label %2, !pc !0
 
 2:                                                ; preds = %1
   br label %sleigh_remill_instruction_function_401000.exit, !pc !0
 
-3:                                                ; preds = %1
-  br label %sleigh_remill_instruction_function_401000.exit, !pc !0
+sleigh_remill_instruction_function_401000.exit:   ; preds = %2, %1
+  %3 = add i32 %0, 1, !pc !1
+  %4 = call i32 inttoptr (i32 add (i32 ptrtoint (ptr @__anvill_pc to i32), i32 4198420) to ptr)(i32 %3) #2, !pc !1
+  br i1 true, label %sleigh_remill_instruction_function_40100c.exit, label %5, !pc !2
 
-sleigh_remill_instruction_function_401000.exit:   ; preds = %3, %2
-  %4 = add i32 %0, 1, !pc !1
-  %5 = call i32 inttoptr (i32 add (i32 ptrtoint (ptr @__anvill_pc to i32), i32 4198420) to ptr)(i32 %4) #2, !pc !1
-  br i1 true, label %6, label %8, !pc !2
-
-6:                                                ; preds = %sleigh_remill_instruction_function_401000.exit
-  %7 = add i32 %5, %0, !pc !2
+5:                                                ; preds = %sleigh_remill_instruction_function_401000.exit
   br label %sleigh_remill_instruction_function_40100c.exit, !pc !2
 
-8:                                                ; preds = %sleigh_remill_instruction_function_401000.exit
-  br label %sleigh_remill_instruction_function_40100c.exit, !pc !2
-
-sleigh_remill_instruction_function_40100c.exit:   ; preds = %8, %6
-  %9 = phi i32 [ %7, %6 ], [ poison, %8 ]
-  %10 = call ptr @__remill_function_return(ptr undef, i32 add (i32 ptrtoint (ptr @__anvill_ra to i32), i32 8), ptr null), !pc !2
-  call void @__anvill_memory_escape(ptr %10)
-  ret i32 %9
+sleigh_remill_instruction_function_40100c.exit:   ; preds = %5, %sleigh_remill_instruction_function_401000.exit
+  %6 = add i32 %4, %0, !pc !2
+  %7 = call ptr @__remill_function_return(ptr undef, i32 add (i32 ptrtoint (ptr @__anvill_ra to i32), i32 8), ptr null), !pc !2
+  call void @__anvill_memory_escape(ptr %7)
+  ret i32 %6
 }
 
 ; Function Attrs: noduplicate noinline nounwind optnone

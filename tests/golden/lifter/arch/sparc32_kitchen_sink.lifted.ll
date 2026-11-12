@@ -99,35 +99,28 @@ define ptr @make_pair(ptr %0, i32 %1, i32 %2) #0 !pc !12 {
 
 ; Function Attrs: noinline
 define i32 @use_pair(i32 %0, i32 %1) #0 !pc !16 {
-  br i1 true, label %3, label %4, !pc !16
+  br i1 true, label %sleigh_remill_instruction_function_40105c.exit, label %3, !pc !16
 
 3:                                                ; preds = %2
   br label %sleigh_remill_instruction_function_40105c.exit, !pc !16
 
-4:                                                ; preds = %2
-  br label %sleigh_remill_instruction_function_40105c.exit, !pc !16
+sleigh_remill_instruction_function_40105c.exit:   ; preds = %3, %2
+  %4 = call ptr @__remill_write_memory_32(ptr null, i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -48), i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -8)), !pc !17
+  %5 = call i32 @__remill_read_memory_32(ptr %4, i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -48)), !pc !18
+  %6 = inttoptr i32 %5 to ptr, !pc !18
+  %7 = call ptr inttoptr (i32 add (i32 ptrtoint (ptr @__anvill_pc to i32), i32 4198472) to ptr)(ptr %6, i32 %0, i32 %1) #3, !pc !18
+  %8 = call i32 @__remill_read_memory_32(ptr %4, i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -8)), !pc !19
+  %9 = call i32 @__remill_read_memory_32(ptr %4, i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -4)), !pc !20
+  br i1 true, label %sleigh_remill_instruction_function_401080.exit, label %10, !pc !21
 
-sleigh_remill_instruction_function_40105c.exit:   ; preds = %4, %3
-  %5 = call ptr @__remill_write_memory_32(ptr null, i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -48), i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -8)), !pc !17
-  %6 = call i32 @__remill_read_memory_32(ptr %5, i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -48)), !pc !18
-  %7 = inttoptr i32 %6 to ptr, !pc !18
-  %8 = call ptr inttoptr (i32 add (i32 ptrtoint (ptr @__anvill_pc to i32), i32 4198472) to ptr)(ptr %7, i32 %0, i32 %1) #3, !pc !18
-  %9 = call i32 @__remill_read_memory_32(ptr %5, i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -8)), !pc !19
-  %10 = call i32 @__remill_read_memory_32(ptr %5, i32 add (i32 ptrtoint (ptr @__anvill_sp to i32), i32 -4)), !pc !20
-  br i1 true, label %11, label %13, !pc !21
-
-11:                                               ; preds = %sleigh_remill_instruction_function_40105c.exit
-  %12 = add i32 %10, %9, !pc !21
+10:                                               ; preds = %sleigh_remill_instruction_function_40105c.exit
   br label %sleigh_remill_instruction_function_401080.exit, !pc !21
 
-13:                                               ; preds = %sleigh_remill_instruction_function_40105c.exit
-  br label %sleigh_remill_instruction_function_401080.exit, !pc !21
-
-sleigh_remill_instruction_function_401080.exit:   ; preds = %13, %11
-  %14 = phi i32 [ %12, %11 ], [ poison, %13 ]
-  %15 = call ptr @__remill_function_return(ptr undef, i32 add (i32 ptrtoint (ptr @__anvill_ra to i32), i32 8), ptr %5), !pc !21
-  call void @__anvill_memory_escape(ptr %15)
-  ret i32 %14
+sleigh_remill_instruction_function_401080.exit:   ; preds = %10, %sleigh_remill_instruction_function_40105c.exit
+  %11 = add i32 %9, %8, !pc !21
+  %12 = call ptr @__remill_function_return(ptr undef, i32 add (i32 ptrtoint (ptr @__anvill_ra to i32), i32 8), ptr %4), !pc !21
+  call void @__anvill_memory_escape(ptr %12)
+  ret i32 %11
 }
 
 attributes #0 = { noinline }

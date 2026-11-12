@@ -8,31 +8,24 @@ target triple = "sparcv9-pc-linux-gnu-elf"
 
 ; Function Attrs: noinline
 define i64 @f(i64 %0) #0 !pc !0 {
-  br i1 true, label %2, label %3, !pc !0
+  br i1 true, label %sleigh_remill_instruction_function_401000.exit, label %2, !pc !0
 
 2:                                                ; preds = %1
   br label %sleigh_remill_instruction_function_401000.exit, !pc !0
 
-3:                                                ; preds = %1
-  br label %sleigh_remill_instruction_function_401000.exit, !pc !0
+sleigh_remill_instruction_function_401000.exit:   ; preds = %2, %1
+  %3 = add i64 %0, 1, !pc !1
+  %4 = call i64 inttoptr (i64 add (i64 ptrtoint (ptr @__anvill_pc to i64), i64 4198420) to ptr)(i64 %3) #2, !pc !1
+  br i1 true, label %sleigh_remill_instruction_function_40100c.exit, label %5, !pc !2
 
-sleigh_remill_instruction_function_401000.exit:   ; preds = %3, %2
-  %4 = add i64 %0, 1, !pc !1
-  %5 = call i64 inttoptr (i64 add (i64 ptrtoint (ptr @__anvill_pc to i64), i64 4198420) to ptr)(i64 %4) #2, !pc !1
-  br i1 true, label %6, label %8, !pc !2
-
-6:                                                ; preds = %sleigh_remill_instruction_function_401000.exit
-  %7 = add i64 %5, %0, !pc !2
+5:                                                ; preds = %sleigh_remill_instruction_function_401000.exit
   br label %sleigh_remill_instruction_function_40100c.exit, !pc !2
 
-8:                                                ; preds = %sleigh_remill_instruction_function_401000.exit
-  br label %sleigh_remill_instruction_function_40100c.exit, !pc !2
-
-sleigh_remill_instruction_function_40100c.exit:   ; preds = %8, %6
-  %9 = phi i64 [ %7, %6 ], [ poison, %8 ]
-  %10 = call ptr @__remill_function_return(ptr undef, i64 add (i64 ptrtoint (ptr @__anvill_ra to i64), i64 8), ptr null), !pc !2
-  call void @__anvill_memory_escape(ptr %10)
-  ret i64 %9
+sleigh_remill_instruction_function_40100c.exit:   ; preds = %5, %sleigh_remill_instruction_function_401000.exit
+  %6 = add i64 %4, %0, !pc !2
+  %7 = call ptr @__remill_function_return(ptr undef, i64 add (i64 ptrtoint (ptr @__anvill_ra to i64), i64 8), ptr null), !pc !2
+  call void @__anvill_memory_escape(ptr %7)
+  ret i64 %6
 }
 
 ; Function Attrs: noduplicate noinline nounwind optnone

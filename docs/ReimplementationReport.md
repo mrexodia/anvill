@@ -7936,7 +7936,7 @@ The cxx-common/vcpkg setup described above has since been replaced by the [remil
 - **Docker / CI.** `ghcr.io/llvmparty/remill-template/dependencies:22.04-llvm19.1.7-remill2026.03.20` already provides LLVM 19.1.7 and remill's dependencies in `/dependencies`. The CI job and the root `Dockerfile` use that image as-is: they install Z3, protobuf and doctest from the Ubuntu packages and build anvill directly, without a dependency superbuild. Remill fetches sleigh itself, and the CMake falls back to module-mode `FindProtobuf` and a manual Z3 lookup when no CMake config packages exist.
 - **Defaults.** `ANVILL_ENABLE_INSTALL` and `ANVILL_ENABLE_PYTHON3_LIBS` now default to OFF.
 - **remill fork.** The submodule tracks [LLVMParty/remill](https://github.com/LLVMParty/remill), branch
-  `sparc-sleigh-v2`: LLVMParty's `master` (synced with upstream remill) plus fourteen commits, meant for upstreaming:
+  `sparc-sleigh-v2`: LLVMParty's `master` (synced with upstream remill) plus sixteen commits, meant for upstreaming:
   (1) the generic Sleigh control-flow categorization, (2) SPARC32 fixes, (3) replacing the hand-written SPARC64
   implementation with Sleigh, (4) removing the dead hand-written SPARC32 decoder, (5) JIT-executed lifting tests
   for both SPARCs (`tests/SPARC`) and CI smoketests, then three fixes found by anvill's SPARC kitchen-sink cases:
@@ -7945,8 +7945,12 @@ The cxx-common/vcpkg setup described above has since been replaced by the [remil
   options and the obsolete `scripts/setup.sh`; and from review of the upstream PR (lifting-bits/remill#789),
   (11) branches to the end of the p-code counted as fallthroughs and the branch-taken op found by its
   instruction-wide index, (12) SPARC32's `MaxInstructionSize` of 8 without fusion, (13) inverted branch-taken
-  variables honoured (SPARC annulled branches were dispatched the wrong way), and (14) mixed flows rejected
-  when an intra-instruction branch can skip the conditional exit. Each commit builds. (This was first carried as a patch applied
+  variables honoured (SPARC annulled branches were dispatched the wrong way), (14) mixed flows rejected
+  when an intra-instruction branch can skip the conditional exit, and two fixes found by anvill's compiled-C
+  cases: (15) p-code blocks that end at a local label fall through instead of leaving the instruction (a
+  conditional move in the delay slot of `retl` skipped the return), and (16) a patch to Ghidra's SPARC spec
+  (`dependencies/sleigh_patches/0014-SPARC-signed-divide.patch`) sign-extending the divisor of `sdiv`/`sdivcc`.
+  Each commit builds. (This was first carried as a patch applied
   at configure time, then as commits that added a separate `sparc64_sleigh` architecture; this series replaces
   them.) What they do:
   - **Why.** remill replaced its hand-written SPARC32 semantics with Ghidra's Sleigh specification (remill #681,
@@ -8030,9 +8034,11 @@ specify anvill's observable behaviour: a clean-room reimplementation is correct 
 - `tests/golden/run_golden.py --anvill-opt BIN --anvill-decompile-spec BIN [--update] [--filter TEXT] DIR`
   runs the cases; `--update` rewrites the expected files. CMake registers it as the `golden` test, and
   `cmake --build build --target update-golden` regenerates everything.
-- `tests/golden/tools/assemble.py [--triple T] [--address A] file.s` assembles a snippet at a fixed address
-  (clang, ld.lld, llvm-objcopy, llvm-objdump) and prints the disassembly as comments plus the escaped bytes for a
-  `memory_ranges` entry.
+- `tests/golden/tools/assemble.py [--triple T] [--address A] [--no-link] file.s|file.c` assembles a snippet
+  (or compiles C with `clang -O2 -fno-jump-tables -ffreestanding -fno-pic`) at a fixed address (clang, ld.lld,
+  llvm-objcopy, llvm-objdump) and prints the disassembly as comments, the escaped bytes for a `memory_ranges`
+  entry and a `symbols` entry per function. With `--no-link` (SPARC, which ld.lld cannot link) the object file
+  must have no relocations.
 
 **Case formats.**
 
@@ -8113,10 +8119,12 @@ specify anvill's observable behaviour: a clean-room reimplementation is correct 
 | `lifter/arch/sparc32_annulled_branch.textproto` | SPARC32 annulled branch (`brz,a`): its delay slot runs only when taken, and remill's branch-taken variable is the inverted condition of a branch to the fallthrough; the result is 20 when x == 0 and 7 otherwise. |
 | `lifter/arch/sparc32_call.textproto` | SPARC32 function with a register window: `save` makes the caller's O registers the callee's I registers, the call's argument is computed in its delay slot, and `restore` both pops the window and computes the result (g(a + 1) + … |
 | `lifter/arch/sparc32_kitchen_sink.textproto` | A bit of everything on SPARC32 (V8 ABI), one small function each: a signed compare and branch with a delay slot, a global load and store (the store in the delay slot of `retl`), a seventh argument on the stack at [SP + 92], a `double` argument moved from O0:O1 to F0 through the stack, a structure returned in memory (address at [SP + 64], return to O7 + 12) and its caller (`unimp 8` after the call's delay slot). |
+| `lifter/arch/sparc32_compiled.textproto` | Compiled C (`lifter/arch/sparc_compiled.c`, clang -O2 for SPARC V8): shifts and logic, `smul`/`sdiv`/`udiv` through `%y`, `ldsb`/`ldsh`/`ldub`, `stb`/`sth`, `fstoi`/`fitod`, `fmuls`/`fadds`, `fcmps` + `fbl`, and branch chains (a conditional select and a switch); each optimized function computes what the C source says. |
 | `lifter/arch/sparc32_delay_slot.textproto` | SPARC32 leaf function whose addition is in the delay slot of `retl`. |
 | `lifter/arch/sparc64_annulled_branch.textproto` | The same annulled `brz,a` on SPARC64. |
 | `lifter/arch/sparc64_branch.textproto` | SPARC V9 conditional branch with a delay slot that is not annulled: the `mov 20` in the delay slot executes on both paths, so the result is 20 when x == 0 and 10 otherwise. |
 | `lifter/arch/sparc64_call.textproto` | SPARC V9 function with a register window: `save` makes the caller's O registers the callee's I registers, the call's argument is computed in its delay slot, and `restore` both pops the window and computes the result (g(a + 1) … |
+| `lifter/arch/sparc64_compiled.textproto` | The same C for SPARC V9: also `mulx`, `ldsw`, float arguments in `%f1`/`%f3`, `movl %fcc0` in the delay slot of `retl`, and `movg %icc`. |
 | `lifter/arch/sparc64_kitchen_sink.textproto` | A bit of everything on SPARC64 (V9 ABI), one small function each: `bge %xcc` with a delay slot, a global load and a 32-bit store of a 64-bit register in the delay slot of `retl`, a seventh argument in stack slot 6 ([SP + 2047 + 176]), a `double` in F0, a two-register structure result and its caller with a register window. |
 | `lifter/arch/sparc64_leaf.textproto` | SPARC V9 (64-bit) leaf function, lifted with remill's Sleigh-based `sparc64` architecture: the 64-bit addition in the delay slot of `retl` is part of the same decoded instruction. |
 | `lifter/arch/x86_cdecl.textproto` | 32-bit x86 cdecl with a type-only prototype: the allocator puts both arguments on the stack in 4-byte slots ([ESP + 4], [ESP + 8]) and the result in EAX; the caller pops the arguments (ESP + 4 after the return). |
@@ -8202,6 +8210,9 @@ reimplementation that wants the original output must reproduce the "old" side of
 | 26e | SPARC `call x; restore` (tail-call idiom) is treated as a call that returns to `pc + 8`. | Open (documented) | — |
 | 26f | SPARC64: a 32-bit access to a 64-bit register (`st %o0`) reads its high word (Sleigh register part lifted from the register's first byte, under the big-endian layout). | Fixed (remill fork, §16.6) | `lifter/arch/sparc64_kitchen_sink` (`bump`), remill `SPARC64Lifts.StoreWordReadsLowWordOfRegister` |
 | 26g | SPARC32: the stack pointer is always 0, so stack accesses become absolute addresses. (`SP` is the high half of the `SP_7` pair; the lifter initialized the enclosing `SP_7` with a zero-extended `__anvill_sp`.) | Fixed (the stack pointer register is `SP` itself when its enclosing register is wider) | `lifter/arch/sparc32_kitchen_sink` (`seventh`, `twice`, `use_pair`) |
+| 26j | SPARC64 `sdiv` divides by the zero-extended low word of its operand (Ghidra's spec), so `7 / -2` is 0. | Fixed (Ghidra spec patch in the remill fork, §16.6) | `lifter/arch/sparc64_compiled` (`mul_div`), remill `SPARC*Lifts.SignedDivide*` |
+| 26k | remill's p-code CFG makes a block that ends at a local label (`if (!c) goto <end>; x = y; <end>: ...`) leave the instruction, skipping the ops after the label on that path: on SPARC64 `retl; movl %fcc0, 10, %o0` did not return when it moved. | Fixed (remill fork, §16.6) | `lifter/arch/sparc64_compiled` (`float_less`), remill `SPARC*Lifts.ReturnWithConditionalMove*` |
+| 26l | SPARC64: an `i32` argument is zero-extended into its 64-bit register, while the V9 ABI sign-extends signed integers (LLVM types carry no signedness). Code that uses the whole register of a negative `int` argument (e.g. as an address offset) is lifted with the wrong upper bits. | Open (documented) | — |
 | 26i | SPARC annulled branches (`b<cond>,a`, `br<cond>,a`) branch the wrong way: remill set `BRANCH_TAKEN` to the condition of the branch to the fallthrough without applying `BranchTakenVar::invert`. | Fixed (remill fork, §16.6) | `lifter/arch/sparc32_annulled_branch`, `sparc64_annulled_branch`, remill `SPARC*Lifts.AnnulledBranch*` |
 | 26h | SPARC: structure-returning functions (`jmp %o7 + 12`) end in an indirect jump, keeping the whole `State`. | Fixed (remill fork categorizes them as returns; displacement 12 accepted) | `lifter/arch/sparc32_kitchen_sink` (`make_pair`), `RemoveRemillFunctionReturns/sparc.ll` |
 | | **Cross-reference folder (§12)** | | |

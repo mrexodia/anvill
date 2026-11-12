@@ -92,32 +92,25 @@ define %0 @swap(i64 %0, i64 %1) #0 !pc !10 {
 
 ; Function Attrs: noinline
 define i64 @use_swap(i64 %0, i64 %1) #0 !pc !12 {
-  br i1 true, label %3, label %4, !pc !12
+  br i1 true, label %sleigh_remill_instruction_function_401050.exit, label %3, !pc !12
 
 3:                                                ; preds = %2
   br label %sleigh_remill_instruction_function_401050.exit, !pc !12
 
-4:                                                ; preds = %2
-  br label %sleigh_remill_instruction_function_401050.exit, !pc !12
+sleigh_remill_instruction_function_401050.exit:   ; preds = %3, %2
+  %4 = call %0 inttoptr (i64 add (i64 ptrtoint (ptr @__anvill_pc to i64), i64 4198464) to ptr)(i64 %0, i64 %1) #3, !pc !13
+  br i1 true, label %sleigh_remill_instruction_function_401060.exit, label %5, !pc !14
 
-sleigh_remill_instruction_function_401050.exit:   ; preds = %4, %3
-  %5 = call %0 inttoptr (i64 add (i64 ptrtoint (ptr @__anvill_pc to i64), i64 4198464) to ptr)(i64 %0, i64 %1) #3, !pc !13
-  br i1 true, label %6, label %10, !pc !14
-
-6:                                                ; preds = %sleigh_remill_instruction_function_401050.exit
-  %7 = extractvalue %0 %5, 1, !pc !13
-  %8 = extractvalue %0 %5, 0, !pc !13
-  %9 = add i64 %7, %8, !pc !14
+5:                                                ; preds = %sleigh_remill_instruction_function_401050.exit
   br label %sleigh_remill_instruction_function_401060.exit, !pc !14
 
-10:                                               ; preds = %sleigh_remill_instruction_function_401050.exit
-  br label %sleigh_remill_instruction_function_401060.exit, !pc !14
-
-sleigh_remill_instruction_function_401060.exit:   ; preds = %10, %6
-  %11 = phi i64 [ %9, %6 ], [ poison, %10 ]
-  %12 = call ptr @__remill_function_return(ptr undef, i64 add (i64 ptrtoint (ptr @__anvill_ra to i64), i64 8), ptr null), !pc !14
-  call void @__anvill_memory_escape(ptr %12)
-  ret i64 %11
+sleigh_remill_instruction_function_401060.exit:   ; preds = %5, %sleigh_remill_instruction_function_401050.exit
+  %6 = extractvalue %0 %4, 1, !pc !13
+  %7 = extractvalue %0 %4, 0, !pc !13
+  %8 = add i64 %6, %7, !pc !14
+  %9 = call ptr @__remill_function_return(ptr undef, i64 add (i64 ptrtoint (ptr @__anvill_ra to i64), i64 8), ptr null), !pc !14
+  call void @__anvill_memory_escape(ptr %9)
+  ret i64 %8
 }
 
 attributes #0 = { noinline }
