@@ -1,3 +1,4 @@
+#include <llvm/Support/raw_ostream.h>
 #include <anvill/Passes/RemoveStackPointerCExprs.h>
 
 #include <anvill/Transforms.h>
@@ -18,7 +19,7 @@ namespace anvill {
 
 static llvm::Function *FindFunction(llvm::Module *module, std::string name) {
   for (auto &function : *module) {
-    if (function.getName().equals(name)) {
+    if (function.getName() == name) {
       return &function;
     }
   }
@@ -50,7 +51,7 @@ TEST_SUITE("RemoveStackPointerCExprs") {
     fpm.addPass(RemoveStackPointerCExprs(opt));
     fpm.run(*target_function, fam);
 
-    target_function->dump();
+    target_function->print(llvm::errs());
 
     CHECK(VerifyModule(mod.get()));
 

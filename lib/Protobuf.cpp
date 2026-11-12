@@ -40,8 +40,16 @@ Result<std::monostate, std::string> ProtobufTranslator::ParseIntoCallableDecl(
   decl.arch = arch;
   decl.is_noreturn = function.is_noreturn();
   decl.is_variadic = function.is_variadic();
-  decl.calling_convention =
-      static_cast<llvm::CallingConv::ID>(function.calling_convention());
+  // The specification's calling convention values are LLVM calling
+  // convention IDs, except for CALLING_CONVENTION_CDECL (1), which is not a
+  // valid LLVM ID and means the C calling convention.
+  if (function.calling_convention() ==
+      ::specification::CALLING_CONVENTION_CDECL) {
+    decl.calling_convention = llvm::CallingConv::C;
+  } else {
+    decl.calling_convention =
+        static_cast<llvm::CallingConv::ID>(function.calling_convention());
+  }
 
   std::stringstream address_stream;
 
@@ -206,24 +214,36 @@ Result<std::monostate, std::string> ProtobufTranslator::ParseIntoCallableDecl(
       return {ss.str()};
     }
 
-    auto maybe_ret_type = DecodeType(function.return_().type());
-    if (!maybe_ret_type.Succeeded()) {
-      return maybe_ret_type.TakeError();
-    }
-
-    i = 0u;
-    for (const ::specification::Value &ret : function.return_().values()) {
-      auto maybe_ret = DecodeValue(ret, maybe_ret_type.Value(), "return value");
-      if (maybe_ret.Succeeded()) {
-        decl.returns.emplace_back(maybe_ret.Value());
-      } else {
-        auto err = maybe_ret.TakeError();
+    // Decode the return values. They all share the type of the `return`
+    // variable. A missing `return` (or one without values) means `void`.
+    const auto &ret_var = function.return_();
+    if (ret_var.values_size() != 0) {
+      if (!ret_var.has_type()) {
         std::stringstream ss;
-        ss << "Could not decode " << i << "th return value in function at "
-           << address_str << ": " << err;
+        ss << "Return values of function at " << address_str
+           << " have no type";
         return {ss.str()};
       }
-      ++i;
+      auto maybe_ret_type = DecodeType(ret_var.type());
+      if (!maybe_ret_type.Succeeded()) {
+        return maybe_ret_type.TakeError();
+      }
+
+      i = 0u;
+      for (const ::specification::Value &ret : ret_var.values()) {
+        auto maybe_ret =
+            DecodeValue(ret, maybe_ret_type.Value(), "return value");
+        if (maybe_ret.Succeeded()) {
+          decl.returns.emplace_back(maybe_ret.Value());
+        } else {
+          auto err = maybe_ret.TakeError();
+          std::stringstream ss;
+          ss << "Could not decode " << i << "th return value in function at "
+             << address_str << ": " << err;
+          return {ss.str()};
+        }
+        ++i;
+      }
     }
 
     // Figure out the return type of this function based off the return
@@ -365,11 +385,11 @@ Result<ParameterDecl, std::string> ProtobufTranslator::DecodeParameter(
 
 anvill::Result<TypeSpec, std::string>
 ProtobufTranslator::DecodeType(const ::specification::TypeSpec &obj) const {
-  if (obj.has_base()) {
+  if ((obj.type_case() == ::specification::TypeSpec::kBase)) {
     auto base = obj.base();
     return {static_cast<BaseType>(base)};
   }
-  if (obj.has_unknown()) {
+  if ((obj.type_case() == ::specification::TypeSpec::kUnknown)) {
     return {UnknownType{obj.unknown()}};
   }
   if (obj.has_pointer()) {
@@ -436,8 +456,9 @@ ProtobufTranslator::DecodeType(const ::specification::TypeSpec &obj) const {
       }
       res->arguments.push_back(std::move(maybe_argtype.Value()));
     }
+    return {std::move(res)};
   }
-  if (obj.has_alias()) {
+  if ((obj.type_case() == ::specification::TypeSpec::kAlias)) {
     return type_map.at(obj.alias());
   }
 
@@ -570,7 +591,7 @@ Result<VariableDecl, std::string> ProtobufTranslator::DecodeGlobalVar(
 anvill::Result<TypeSpec, std::string> ProtobufTranslator::DecodeType(
     const ::specification::TypeSpec &obj,
     const std::unordered_map<std::int64_t, ::specification::TypeSpec> &map) {
-  if (obj.has_alias()) {
+  if ((obj.type_case() == ::specification::TypeSpec::kAlias)) {
     auto alias = obj.alias();
     if (type_map.count(alias)) {
       return type_map[alias];
@@ -647,6 +668,7 @@ anvill::Result<TypeSpec, std::string> ProtobufTranslator::DecodeType(
       }
       res->arguments.push_back(std::move(maybe_argtype.Value()));
     }
+    return {std::move(res)};
   }
 
   return DecodeType(obj);

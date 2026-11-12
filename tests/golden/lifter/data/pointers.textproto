@@ -1,0 +1,36 @@
+# Pointer-typed data is lifted to references to the entities at the target
+# addresses: a function (declared from its prototype), the start of another
+# variable, an interior address of a variable (a GEP into it), a pointer to
+# itself, and an unknown address (a plain `inttoptr` constant).
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  func_linkage: FUNCTION_LINKAGE_DECL
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+  }
+}
+global_variables {
+  address: 0x404000
+  type { struct {
+    members { pointer {} }
+    members { pointer {} }
+    members { pointer {} }
+    members { pointer {} }
+    members { pointer {} }
+  } }
+}
+global_variables { address: 0x405000 type { array { base { base: BT_I32 } size: 4 } } }
+memory_ranges { address: 0x401000 is_executable: true values: "\xc3" }
+memory_ranges {
+  address: 0x404000
+  is_writeable: true
+  values: "\x00\x10\x40\x00\x00\x00\x00\x00\x00\x50\x40\x00\x00\x00\x00\x00\x08\x50\x40\x00\x00\x00\x00\x00\x18\x40\x40\x00\x00\x00\x00\x00\xef\xbe\xad\xde\x00\x00\x00\x00"
+}
+memory_ranges { address: 0x405000 values: "\x01\x00\x00\x00\x02\x00\x00\x00\x03\x00\x00\x00\x04\x00\x00\x00" }
+symbols { name: "handler" address: 0x401000 }
+symbols { name: "table" address: 0x404000 }
+symbols { name: "numbers" address: 0x405000 }

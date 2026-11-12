@@ -1,0 +1,31 @@
+# SPARC32 annulled branch: the delay slot of `brz,a` runs only when the
+# branch is taken. Its p-code first branches to the fallthrough (skipping
+# the delay slot) when the condition is false, so remill's branch-taken
+# variable is the inverted condition. The result must be 20 when x == 0
+# and 7 otherwise. (Previously remill ignored the inversion, so the lifted
+# function returned 7 when x == 0 and 20 otherwise.)
+#   int pick(int x) { return x == 0 ? 20 : 7; }
+#   401000: 82102007 mov 7, %g1
+#   401004: 22c20004 brz,a %o0, 0x401014
+#   401008: 82102014 mov 20, %g1        (annulled when not taken)
+#   40100c: 81c3e008 retl
+#   401010: 90100001 mov %g1, %o0
+#   401014: 81c3e008 retl
+#   401018: 90100001 mov %g1, %o0
+# (Hand-encoded.)
+# RUN: --add_names
+arch: ARCH_SPARC32
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    type {
+      function {
+        return_type { base: BT_I32 }
+        arguments { base: BT_I32 }
+      }
+    }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x82\x10\x20\x07\x22\xc2\x00\x04\x82\x10\x20\x14\x81\xc3\xe0\x08\x90\x10\x00\x01\x81\xc3\xe0\x08\x90\x10\x00\x01" }
+symbols { name: "pick" address: 0x401000 }

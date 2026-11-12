@@ -1,0 +1,32 @@
+# A call to an `is_noreturn` function ends the block with `__remill_error`;
+# the code after the call is not lifted, and the callee is declared noreturn.
+#   void die(void) __attribute__((noreturn));
+#   int f(void) { die(); return 1; }
+#   401000: 50 pushq %rax
+#   401001: e8 fa 0f 00 00 callq 0x402000 <.text+0x1000>
+#   401006: b8 01 00 00 00 movl $0x1, %eax
+#   40100b: 59 popq %rcx
+#   40100c: c3 retq
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+    return { values { reg { register_name: "EAX" } } type { base: BT_I32 } }
+  }
+}
+functions {
+  entry_address: 0x402000
+  func_linkage: FUNCTION_LINKAGE_EXTERNAL
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+    is_noreturn: true
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x50\xe8\xfa\x0f\x00\x00\xb8\x01\x00\x00\x00\x59\xc3" }
+symbols { name: "calls_die" address: 0x401000 }
+symbols { name: "die" address: 0x402000 }

@@ -176,7 +176,7 @@ void OptimizeModule(const EntityLifter &lifter, llvm::Module &module) {
   fpm.addPass(llvm::SCCPPass());
   // NOTE(alex): This pass is extremely slow with LLVM 14.
   // fpm.addPass(llvm::DSEPass());
-  fpm.addPass(llvm::SROAPass());
+  fpm.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
   fpm.addPass(llvm::EarlyCSEPass(true));
   fpm.addPass(llvm::BDCEPass());
   fpm.addPass(llvm::SimplifyCFGPass());
@@ -199,7 +199,7 @@ void OptimizeModule(const EntityLifter &lifter, llvm::Module &module) {
 
   fpm.addPass(llvm::InstCombinePass());
   fpm.addPass(llvm::DCEPass());
-  fpm.addPass(llvm::SROAPass());
+  fpm.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
 
   // Sometimes we observe patterns where PC- and SP-related offsets are
   // accidentally truncated, and thus displacement-based analyses make them
@@ -216,7 +216,7 @@ void OptimizeModule(const EntityLifter &lifter, llvm::Module &module) {
   AddRemoveStackPointerCExprs(fpm, options.stack_frame_recovery_options);
   AddRecoverBasicStackFrame(fpm, options.stack_frame_recovery_options);
   AddSplitStackFrameAtReturnAddress(fpm, options.stack_frame_recovery_options);
-  fpm.addPass(llvm::SROAPass());
+  fpm.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
 
 
   AddCombineAdjacentShifts(fpm);
@@ -250,6 +250,12 @@ void OptimizeModule(const EntityLifter &lifter, llvm::Module &module) {
   second_fpm.addPass(llvm::DCEPass());
 
 
+  // NOTE: This appends to the *same* module pass manager, so this second
+  //       `run` executes GlobalOpt, GlobalDCE, StripDeadDebugInfo and the
+  //       whole first function pipeline again before `second_fpm`. That
+  //       second round is relied upon: it removes the stack frames left
+  //       around calls and the dead blocks left by switch lowering (see the
+  //       tests/golden/lifter outputs), so it is kept deliberately.
   mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(second_fpm)));
   mpm.run(module, mam);
 

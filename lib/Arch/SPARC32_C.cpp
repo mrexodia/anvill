@@ -15,32 +15,36 @@
 #include "Arch.h"
 
 namespace anvill {
+
+// NOTE: Register names follow remill's (sleigh-based) SPARC32 register table:
+//       O0-O5, SP (%o6), O7, FS0-FS31 (single precision) and FD0-FD30
+//       (double precision).
 namespace {
 
 static const std::vector<RegisterConstraint> kParamRegConstraints = {
-    RegisterConstraint({VariantConstraint("o0", kTypeNumeric, kMaxBit32)}),
-    RegisterConstraint({VariantConstraint("o1", kTypeNumeric, kMaxBit32)}),
-    RegisterConstraint({VariantConstraint("o2", kTypeNumeric, kMaxBit32)}),
-    RegisterConstraint({VariantConstraint("o3", kTypeNumeric, kMaxBit32)}),
-    RegisterConstraint({VariantConstraint("o4", kTypeNumeric, kMaxBit32)}),
-    RegisterConstraint({VariantConstraint("o5", kTypeNumeric, kMaxBit32)}),
+    RegisterConstraint({VariantConstraint("O0", kTypeNumeric, kMaxBit32)}),
+    RegisterConstraint({VariantConstraint("O1", kTypeNumeric, kMaxBit32)}),
+    RegisterConstraint({VariantConstraint("O2", kTypeNumeric, kMaxBit32)}),
+    RegisterConstraint({VariantConstraint("O3", kTypeNumeric, kMaxBit32)}),
+    RegisterConstraint({VariantConstraint("O4", kTypeNumeric, kMaxBit32)}),
+    RegisterConstraint({VariantConstraint("O5", kTypeNumeric, kMaxBit32)}),
 };
 
 static const std::vector<RegisterConstraint> kReturnRegConstraints = {
-    RegisterConstraint({VariantConstraint("o0", kTypeIntegral, kMaxBit32)}),
-    RegisterConstraint({VariantConstraint("o1", kTypeIntegral, kMaxBit32)}),
-    RegisterConstraint({VariantConstraint("o2", kTypeIntegral, kMaxBit32)}),
-    RegisterConstraint({VariantConstraint("o3", kTypeIntegral, kMaxBit32)}),
-    RegisterConstraint({VariantConstraint("o4", kTypeIntegral, kMaxBit32)}),
-    RegisterConstraint({VariantConstraint("o5", kTypeIntegral, kMaxBit32)}),
+    RegisterConstraint({VariantConstraint("O0", kTypeIntegral, kMaxBit32)}),
+    RegisterConstraint({VariantConstraint("O1", kTypeIntegral, kMaxBit32)}),
+    RegisterConstraint({VariantConstraint("O2", kTypeIntegral, kMaxBit32)}),
+    RegisterConstraint({VariantConstraint("O3", kTypeIntegral, kMaxBit32)}),
+    RegisterConstraint({VariantConstraint("O4", kTypeIntegral, kMaxBit32)}),
+    RegisterConstraint({VariantConstraint("O5", kTypeIntegral, kMaxBit32)}),
 
-    RegisterConstraint({VariantConstraint("f0", kTypeFloat, kMaxBit32)}),
-    RegisterConstraint({VariantConstraint("f1", kTypeFloat, kMaxBit32)}),
-    RegisterConstraint({VariantConstraint("f2", kTypeFloat, kMaxBit32)}),
-    RegisterConstraint({VariantConstraint("f3", kTypeFloat, kMaxBit32)}),
+    RegisterConstraint({VariantConstraint("FS0", kTypeFloat, kMaxBit32)}),
+    RegisterConstraint({VariantConstraint("FS1", kTypeFloat, kMaxBit32)}),
+    RegisterConstraint({VariantConstraint("FS2", kTypeFloat, kMaxBit32)}),
+    RegisterConstraint({VariantConstraint("FS3", kTypeFloat, kMaxBit32)}),
 
-    RegisterConstraint({VariantConstraint("d0", kTypeFloat, kMaxBit64)}),
-    RegisterConstraint({VariantConstraint("d2", kTypeFloat, kMaxBit64)}),
+    RegisterConstraint({VariantConstraint("FD0", kTypeFloat, kMaxBit64)}),
+    RegisterConstraint({VariantConstraint("FD2", kTypeFloat, kMaxBit64)}),
 };
 
 // Used to split things like `i64`s into multiple `i32`s.
@@ -113,9 +117,9 @@ llvm::Error SPARC32_C::AllocateSignature(FunctionDecl &fdecl,
   }
 
   fdecl.return_stack_pointer_offset = 0;
-  fdecl.return_stack_pointer = arch->RegisterByName("o6");
+  fdecl.return_stack_pointer = arch->RegisterByName("SP");
 
-  fdecl.return_address.reg = arch->RegisterByName("o7");
+  fdecl.return_address.reg = arch->RegisterByName("O7");
   fdecl.return_address.type = fdecl.return_address.reg->type;
 
   return llvm::Error::success();
@@ -142,7 +146,7 @@ SPARC32_C::BindReturnValues(llvm::Function &function, bool &injected_sret,
           remill::LLVMThingToString(ret_type).c_str());
     }
 
-    value_declaration.reg = arch->RegisterByName("o0");
+    value_declaration.reg = arch->RegisterByName("O0");
     return llvm::Error::success();
   }
 
@@ -156,14 +160,14 @@ SPARC32_C::BindReturnValues(llvm::Function &function, bool &injected_sret,
 
       if (bit_width <= 32) {
         auto &value_declaration = ret_values.emplace_back();
-        value_declaration.reg = arch->RegisterByName("o0");
+        value_declaration.reg = arch->RegisterByName("O0");
         value_declaration.type = ret_type;
         return llvm::Error::success();
 
       // Split the integer across `o5:o0`. Experimentally, the largest
       // returnable integer is 192 bits in size, any larger and LLVM crashes.
       } else if (bit_width <= 192) {
-        const char *ret_names[] = {"o0", "o1", "o2", "o3", "o4", "o5"};
+        const char *ret_names[] = {"O0", "O1", "O2", "O3", "O4", "O5"};
         for (auto i = 0u; i < 6 && (32 * i) < bit_width; ++i) {
           auto &value_declaration = ret_values.emplace_back();
           value_declaration.reg = arch->RegisterByName(ret_names[i]);
@@ -181,7 +185,7 @@ SPARC32_C::BindReturnValues(llvm::Function &function, bool &injected_sret,
 
     case llvm::Type::PointerTyID: {
       auto &value_declaration = ret_values.emplace_back();
-      value_declaration.reg = arch->RegisterByName("o0");
+      value_declaration.reg = arch->RegisterByName("O0");
       value_declaration.type = ret_type;
       return llvm::Error::success();
     }
@@ -189,33 +193,44 @@ SPARC32_C::BindReturnValues(llvm::Function &function, bool &injected_sret,
     case llvm::Type::HalfTyID:
     case llvm::Type::FloatTyID: {
       auto &value_declaration = ret_values.emplace_back();
-      value_declaration.reg = arch->RegisterByName("f0");
+      value_declaration.reg = arch->RegisterByName("FS0");
       value_declaration.type = ret_type;
       return llvm::Error::success();
     }
 
     case llvm::Type::DoubleTyID: {
       auto &value_declaration = ret_values.emplace_back();
-      value_declaration.reg = arch->RegisterByName("d0");
+      value_declaration.reg = arch->RegisterByName("FD0");
       value_declaration.type = ret_type;
       return llvm::Error::success();
     }
 
     // Try to split the composite type over registers, and fall back on RVO
     // if it's not possible.
-    case llvm::Type::FixedVectorTyID:
+    // Aggregates (and `long double`, which is `fp128`) are returned in
+    // memory: the caller stores the address of the result at [SP + 64] in its
+    // frame, and the callee returns that address in O0. (Previously the
+    // generic allocator tried to split aggregates over O0-O5/F registers.)
+    //
+    // NOTE: such callees return to `O7 + 12` rather than `O7 + 8`, skipping
+    // an `unimp` instruction that holds the size of the result. That is not
+    // modelled.
+    case llvm::Type::FP128TyID:
     case llvm::Type::ArrayTyID:
     case llvm::Type::StructTyID: {
+      injected_sret = true;
+      auto &value_declaration = ret_values.emplace_back();
+      value_declaration.reg = arch->RegisterByName("O0");
+      value_declaration.type = llvm::PointerType::get(function.getContext(), 0);
+      return llvm::Error::success();
+    }
+
+    case llvm::Type::FixedVectorTyID: {
       AllocationState alloc_ret(return_register_constraints, arch, this);
       alloc_ret.config.type_splitter = IntegerTypeSplitter;
       auto mapping = alloc_ret.TryRegisterAllocate(*ret_type);
-
-      // There is a valid split over registers, so add the mapping
       if (mapping) {
-        return alloc_ret.CoalescePacking(mapping.getValue(), ret_values);
-
-      // Composite type splitting; Unlike with x86, LLVM doesn't naturally
-      // perform RVO on large structures returned by value from bitcode.
+        return alloc_ret.CoalescePacking(mapping.value(), ret_values);
       } else {
         break;
       }
@@ -237,88 +252,92 @@ SPARC32_C::BindReturnValues(llvm::Function &function, bool &injected_sret,
 // completely split over the above registers, then greedily split it over the
 // registers. Otherwise, the struct is passed entirely on the stack. If we run
 // our of registers then pass the rest of the arguments on the stack.
+// Parameters follow the SPARC V8 ABI (System V ABI SPARC Processor
+// Supplement, "Function Calling Sequence"): every argument is a sequence of
+// 4-byte words, and the words of all arguments are passed in O0-O5, then on
+// the stack starting at [SP + 92] (word 6 is at [SP + 92], word 7 at
+// [SP + 96], ...). Floating-point arguments use the integer registers too,
+// and a `double` or `long long` may be split between O5 and the stack.
+// Aggregates and `long double` are passed by reference: the word is a
+// pointer to a copy. A single-word value keeps its type; each word of a
+// multi-word value is an `i32`.
+//
+// (Previously the generic allocator was used: `double` arguments went
+// straight to the stack because no register accepted 64-bit floats, stack
+// offsets used the exact allocation sizes, and aggregate results were
+// rejected.)
 llvm::Error
 SPARC32_C::BindParameters(llvm::Function &function, bool injected_sret,
                           std::vector<ParameterDecl> &parameter_declarations) {
-  CHECK(!injected_sret)
-      << "Injected struct returns are not supported on SPARC targets";
-
   const auto param_names = TryRecoverParamNames(function);
-  llvm::DataLayout dl(function.getParent());
+  const llvm::DataLayout &dl = function.getParent()->getDataLayout();
+  const auto sp_reg = arch->RegisterByName("SP");
+  const char *const kRegs[] = {"O0", "O1", "O2", "O3", "O4", "O5"};
+  auto ptr_type = llvm::PointerType::get(function.getContext(), 0);
+  auto i32_type = llvm::Type::getInt32Ty(function.getContext());
 
-  // Used to keep track of which registers have been allocated
-  AllocationState alloc_param(parameter_register_constraints, arch, this);
-  alloc_param.config.type_splitter = IntegerTypeSplitter;
+  // The address of an aggregate result lives in the caller's frame at
+  // [SP + 64]; it is not one of the argument words.
+  if (injected_sret) {
+    auto &decl = parameter_declarations.emplace_back();
+    decl.name = "__struct_ret_ptr";
+    decl.type = ptr_type;
+    decl.mem_reg = sp_reg;
+    decl.mem_offset = 64;
+  }
 
-  // If we compile the following C code, then the `a6` parameter must be passed
-  // on the stack:
-  //
-  //    unsigned a(unsigned a0, unsigned a1, unsigned a2, unsigned a3,
-  //               unsigned a4, unsigned a5, unsigned a6) {
-  //        return a6;
-  //    }
-  //
-  // We get machine code looking like:
-  //
-  //    a:
-  //            save %sp, -96, %sp
-  //            ld [%fp+92], %i0
-  //            ret
-  //            restore
-  //
-  // The stack pointer, `%sp` aliases `%o6`. The frame pointer, `%fp` aliases
-  // `%i6`. The `save` instruction copies `%sp` into `%fp`, and so the
-  // `[%fp+92]` is actually 92 + the value on entry of the stack pointer, `o6`.
-  uint64_t stack_offset = 92;
-
-  const auto sp_reg = arch->RegisterByName("o6");
-
+  auto word = 0u;
   for (auto &argument : function.args()) {
     const auto &param_name = param_names[argument.getArgNo()];
-    const auto param_type = argument.getType();
+    auto param_type = argument.getType();
 
-    auto allocation = alloc_param.TryRegisterAllocate(*param_type);
+    if (argument.hasStructRetAttr()) {
+      auto &decl = parameter_declarations.emplace_back();
+      decl.name = param_name;
+      decl.type = param_type;
+      decl.mem_reg = sp_reg;
+      decl.mem_offset = 64;
+      continue;
+    }
 
-    // Try to allocate from a register. If a register is not available then
-    // allocate from the stack.
-    if (allocation) {
-      const auto prev_size = parameter_declarations.size();
+    if (param_type->isStructTy() || param_type->isArrayTy() ||
+        param_type->isFP128Ty()) {
+      param_type = ptr_type;
+    }
 
-      for (const auto &param_decl : allocation.getValue()) {
-        auto &declaration = parameter_declarations.emplace_back();
-        declaration.type = param_decl.type;
-        if (param_decl.reg) {
-          declaration.reg = param_decl.reg;
-        } else {
-          declaration.mem_offset = param_decl.mem_offset;
-          declaration.mem_reg = param_decl.mem_reg;
-        }
+    const auto size = dl.getTypeAllocSize(param_type).getFixedValue();
+    const auto num_words = static_cast<unsigned>((size + 3u) / 4u);
+    const auto prev_size = parameter_declarations.size();
+
+    // Entirely on the stack: keep the value whole.
+    if (word >= 6u) {
+      auto &decl = parameter_declarations.emplace_back();
+      decl.name = param_name;
+      decl.type = param_type;
+      decl.mem_reg = sp_reg;
+      decl.mem_offset = static_cast<int64_t>(92u + 4u * (word - 6u));
+      word += num_words;
+      continue;
+    }
+
+    for (auto i = 0u; i < num_words; ++i, ++word) {
+      auto &decl = parameter_declarations.emplace_back();
+      decl.type = num_words == 1u ? param_type : i32_type;
+      if (word < 6u) {
+        decl.reg = arch->RegisterByName(kRegs[word]);
+      } else {
+        decl.mem_reg = sp_reg;
+        decl.mem_offset = static_cast<int64_t>(92u + 4u * (word - 6u));
       }
+    }
 
-      // The parameter fit in one register / stack slot.
-      if ((prev_size + 1u) == parameter_declarations.size()) {
-        if (!param_name.empty()) {
-          parameter_declarations[prev_size].name = param_name;
-        }
-
-      // The parameter was spread across multiple registers.
-      } else if (!param_name.empty()) {
-        for (auto i = 0u; i < (parameter_declarations.size() - prev_size);
-             ++i) {
-          parameter_declarations[prev_size + i].name =
-              param_name + std::to_string(i);
-        }
-      }
-
-    } else {
-      auto &declaration = parameter_declarations.emplace_back();
-      declaration.type = param_type;
-      declaration.mem_offset = static_cast<int64_t>(stack_offset);
-      declaration.mem_reg = sp_reg;
-      stack_offset += dl.getTypeAllocSize(argument.getType());
-
-      if (!param_name.empty()) {
-        declaration.name = param_name;
+    const auto num_parts = parameter_declarations.size() - prev_size;
+    if (num_parts == 1u) {
+      parameter_declarations[prev_size].name = param_name;
+    } else if (!param_name.empty()) {
+      for (auto i = 0u; i < num_parts; ++i) {
+        parameter_declarations[prev_size + i].name =
+            param_name + std::to_string(i);
       }
     }
   }

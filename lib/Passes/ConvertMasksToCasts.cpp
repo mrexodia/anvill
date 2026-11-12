@@ -78,14 +78,14 @@ ConvertMasksToCasts::run(llvm::Function &func,
                                          m_ConstantInt(shl_amount)),
                                    m_ConstantInt(ashr_amount))) &&
                shl_amount == ashr_amount) {
+      // `(ashr (shl V, S), S)` sign-extends the low `N - S` bits of `V`.
       auto target_type = llvm::dyn_cast<llvm::IntegerType>(inst.getType());
-      switch (auto target_size = target_type->getBitWidth()) {
-        case 8: case 16: case 32: case 64: case 128:
-          shl_ashrs.emplace_back(
-              &inst, llvm::Type::getIntNTy(context, target_size / 2u));
-          break;
-        default:
-          break;
+      const auto target_size = target_type->getBitWidth();
+      const auto shift = shl_amount->getZExtValue();
+      if (0u < shift && shift < target_size) {
+        shl_ashrs.emplace_back(
+            &inst, llvm::Type::getIntNTy(
+                       context, target_size - static_cast<unsigned>(shift)));
       }
 
     // Go find cases of `(add (shl val N) (M << N))`.
@@ -155,6 +155,8 @@ ConvertMasksToCasts::run(llvm::Function &func,
     inst->eraseFromParent();
 
     to_remove.insert(shl);
+    ++replaced_items;
+    changed = true;
   }
 
   // Replace `(ashr (shl ...) ...)` with `(sext (trunc ...))`.
@@ -165,8 +167,11 @@ ConvertMasksToCasts::run(llvm::Function &func,
     // have changed things.
     llvm::Value *val_to_sext = nullptr;
     llvm::Instruction *shl = nullptr;
-    if (!match(inst, m_AShr(m_Instruction(shl), m_ConstantInt())) ||
-        !match(shl, m_Shl(m_Value(val_to_sext), m_ConstantInt()))) {
+    llvm::ConstantInt *shl_amount = nullptr;
+    llvm::ConstantInt *ashr_amount = nullptr;
+    if (!match(inst, m_AShr(m_Instruction(shl), m_ConstantInt(ashr_amount))) ||
+        !match(shl, m_Shl(m_Value(val_to_sext), m_ConstantInt(shl_amount))) ||
+        shl_amount != ashr_amount) {
       continue;
     }
 

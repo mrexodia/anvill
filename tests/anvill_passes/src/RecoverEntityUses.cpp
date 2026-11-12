@@ -1,3 +1,4 @@
+#include <llvm/Support/raw_ostream.h>
 #include <anvill/Lifters.h>
 #include <anvill/Transforms.h>
 #include <doctest/doctest.h>
@@ -52,7 +53,7 @@ namespace anvill {
       llvm::FunctionAnalysisManager fam;
 
       conv.run(*func, fam);
-      func->dump();
+      func->print(llvm::errs());
     }
     }
 }

@@ -1,0 +1,14 @@
+# Global variables are lifted as `var_<addr>_<type>` with an initializer built
+# from the memory bytes. Read-only memory gives a constant. A variable whose
+# type cannot be used (void) is skipped with a warning; previously this threw
+# an exception from the specification loader.
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+global_variables { address: 0x404000 type { base: BT_I32 } }
+global_variables { address: 0x405000 type { base: BT_U64 } }
+global_variables { address: 0x406000 type { base: BT_VOID } }
+memory_ranges { address: 0x404000 is_writeable: true values: "\x2a\x00\x00\x00" }
+memory_ranges { address: 0x405000 values: "\x88\x77\x66\x55\x44\x33\x22\x11" }
+symbols { name: "counter" address: 0x404000 }
+symbols { name: "magic" address: 0x405000 }

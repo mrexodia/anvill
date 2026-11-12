@@ -1,0 +1,20 @@
+# int inc(int x) { return x + 1; }
+#   401130: 8d 47 01   lea eax, [rdi + 1]
+#   401133: c3         ret
+# Explicit-location prototype: x in EDI, result in EAX, return address at
+# [RSP], RSP + 8 after the return.
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401130
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+    parameters { name: "x" repr_var { values { reg { register_name: "EDI" } } type { base: BT_I32 } } }
+    return { values { reg { register_name: "EAX" } } type { base: BT_I32 } }
+  }
+}
+memory_ranges { address: 0x401130 is_executable: true values: "\x8d\x47\x01\xc3" }
+overrides { returns { address: 0x401133 } }
+symbols { name: "inc" address: 0x401130 }

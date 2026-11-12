@@ -22,13 +22,19 @@
 #include <llvm/IR/Instruction.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/Intrinsics.h>
-#include <llvm/IR/LegacyPassManager.h>
+#include <llvm/IR/PassManager.h>
+#include <llvm/Passes/PassBuilder.h>
+#include <llvm/Transforms/Scalar/DCE.h>
+#include <llvm/Transforms/Scalar/DeadStoreElimination.h>
+#include <llvm/Transforms/Scalar/Reassociate.h>
+#include <llvm/Transforms/Scalar/SROA.h>
+#include <llvm/Transforms/Scalar/SimplifyCFG.h>
+#include <llvm/Transforms/Utils/Mem2Reg.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/Pass.h>
 #include <llvm/Transforms/InstCombine/InstCombine.h>
-#include <llvm/Transforms/Scalar.h>
 #include <llvm/Transforms/Utils.h>
 #include <llvm/Transforms/Utils/Cloning.h>
 #include <remill/Arch/Arch.h>
@@ -114,7 +120,7 @@ static llvm::Function *GetAnvillSwitchFunc(llvm::Module &module,
   func = llvm::Function::Create(func_type, llvm::GlobalValue::ExternalLinkage,
                                 func_name, module);
 
-  func->addFnAttr(llvm::Attribute::ReadNone);
+  func->setDoesNotAccessMemory();
 
   return func;
 }
@@ -148,6 +154,17 @@ static void AnnotateInstructions(llvm::BasicBlock *block, unsigned id,
   }
 }
 
+// The register that holds the stack pointer: the enclosing register of the
+// stack pointer when that is the same register under another name (e.g.
+// `R13` for `SP` on AArch32). On SPARC32, `SP` is a half of the `SP_7`
+// register pair, the other half being `O7`, so the stack pointer is `SP`
+// itself.
+static const remill::Register *StackPointerRegister(const remill::Arch &arch) {
+  const auto sp = arch.RegisterByName(arch.StackPointerRegisterName());
+  const auto enclosing = sp->EnclosingRegister();
+  return enclosing->size == sp->size ? enclosing : sp;
+}
+
 }  // namespace
 
 FunctionLifter::~FunctionLifter(void) {}
@@ -164,9 +181,7 @@ FunctionLifter::FunctionLifter(const LifterOptions &options_)
       pc_reg(options.arch
                  ->RegisterByName(options.arch->ProgramCounterRegisterName())
                  ->EnclosingRegister()),
-      sp_reg(
-          options.arch->RegisterByName(options.arch->StackPointerRegisterName())
-              ->EnclosingRegister()),
+      sp_reg(StackPointerRegister(*options.arch)),
       is_sparc(options.arch->IsSPARC32() || options.arch->IsSPARC64()),
       is_x86_or_amd64(options.arch->IsX86() || options.arch->IsAMD64()),
       i8_type(llvm::Type::getInt8Ty(llvm_context)),
@@ -237,7 +252,7 @@ FunctionLifter::GetOrCreateTargetBlock(const remill::Instruction &from_inst,
 bool FunctionLifter::DecodeInstructionInto(const uint64_t addr, bool is_delayed,
                                            remill::Instruction *inst_out,
                                            remill::DecodingContext context) {
-  static const auto max_inst_size = options.arch->MaxInstructionSize(context);
+  const auto max_inst_size = options.arch->MaxInstructionSize(context);
   inst_out->Reset();
 
   // Read the maximum number of bytes possible for instructions on this
@@ -297,6 +312,21 @@ void FunctionLifter::VisitError(
   VisitDelayedInstruction(inst, delayed_inst, block, true);
   MuteStateEscape(
       remill::AddTerminatingTailCall(block, intrinsics.error, intrinsics));
+}
+
+// A tail call returns to our caller: the callee's return value is left in
+// the machine state and `CallFromLiftedBlock` has set `NEXT_PC` to the return
+// address. End the block like a function return; a callee that does not
+// return ends the block with an error instead.
+void FunctionLifter::FinishTailCall(llvm::BasicBlock *block, bool can_return) {
+  if (!can_return) {
+    InsertError(block);
+    return;
+  }
+  auto func_return = remill::AddTerminatingTailCall(
+      block, intrinsics.function_return, intrinsics);
+  AnnotateInstruction(func_return, pc_annotation_id, pc_annotation);
+  MuteStateEscape(func_return);
 }
 
 void FunctionLifter::InsertError(llvm::BasicBlock *block) {
@@ -370,10 +400,18 @@ void FunctionLifter::VisitDirectJump(
         block);
   } else if (std::holds_alternative<Call>(cf)) {
     VisitDelayedInstruction(inst, delayed_inst, block, true);
-    CallFunction(inst, block, inst.branch_taken_pc);
-    InsertError(block);
+    FinishTailCall(block, CallFunction(inst, block, inst.branch_taken_pc));
   } else {
-    LOG(FATAL) << "Invalid spec for direct jump at " << std::hex << inst.pc;
+
+    // No (usable) override: a direct jump goes to its decoded target.
+    LOG_IF(ERROR, !std::holds_alternative<std::monostate>(cf))
+        << "Ignoring invalid control-flow override for direct jump at "
+        << std::hex << inst.pc;
+    VisitDelayedInstruction(inst, delayed_inst, block, true);
+    llvm::BranchInst::Create(
+        GetOrCreateTargetBlock(inst, mapper.taken_flow.known_target,
+                               mapper.taken_flow.static_context),
+        block);
   }
 }
 
@@ -522,14 +560,21 @@ void FunctionLifter::VisitIndirectJump(
     }
   } else if (std::holds_alternative<Call>(cf)) {
     VisitDelayedInstruction(inst, delayed_inst, block, true);
-    CallFunction(inst, block, std::nullopt);
-    InsertError(block);
+    FinishTailCall(block, CallFunction(inst, block, std::nullopt));
   } else if (std::holds_alternative<Return>(cf)) {
     // TODO(Ian): It feels like we should be able to handle overrides/control flow much more uniformally, I think it would be good to do so in
     // a separate PR.
     this->VisitFunctionReturn(inst, delayed_inst, block);
   } else {
-    LOG(FATAL) << "Invalid spec for indirect jump at " << std::hex << inst.pc;
+
+    // No (usable) override: the target is unknown.
+    LOG_IF(ERROR, !std::holds_alternative<std::monostate>(cf))
+        << "Ignoring invalid control-flow override for indirect jump at "
+        << std::hex << inst.pc;
+    VisitDelayedInstruction(inst, delayed_inst, block, true);
+    auto jump =
+        remill::AddTerminatingTailCall(block, intrinsics.jump, intrinsics);
+    AnnotateInstruction(jump, pc_annotation_id, pc_annotation);
   }
 }
 
@@ -623,10 +668,14 @@ bool FunctionLifter::CallFunction(const remill::Instruction &inst,
                                   llvm::BasicBlock *block,
                                   std::optional<std::uint64_t> target_pc) {
   auto cf = options.control_flow_provider.GetControlFlowOverride(inst.pc);
-  if (!std::holds_alternative<Call>(cf)) {
-    LOG(FATAL) << "Invalid spec for call at " << std::hex << inst.pc;
+  Call call_spec{};
+  if (std::holds_alternative<Call>(cf)) {
+    call_spec = std::get<Call>(cf);
+  } else {
+    LOG_IF(ERROR, !std::holds_alternative<std::monostate>(cf))
+        << "Ignoring invalid control-flow override for call at " << std::hex
+        << inst.pc;
   }
-  auto call_spec = std::get<Call>(cf);
   std::optional<CallableDecl> maybe_decl;
 
   if (call_spec.target_address.has_value()) {
@@ -928,7 +977,7 @@ void FunctionLifter::InstrumentCallBreakpointFunction(llvm::BasicBlock *block) {
     func->removeFnAttr(llvm::Attribute::AlwaysInline);
     func->removeFnAttr(llvm::Attribute::InlineHint);
     func->addFnAttr(llvm::Attribute::NoInline);
-    func->addFnAttr(llvm::Attribute::ReadNone);
+    func->setDoesNotAccessMemory();
 
     llvm::IRBuilder<> ir(llvm::BasicBlock::Create(llvm_context, "", func));
     ir.CreateRet(remill::NthArgument(func, 0));
@@ -1053,19 +1102,6 @@ void FunctionLifter::VisitInstructions(uint64_t address) {
     auto next_context = DecodeInstructionInto(inst_addr, false /* is_delayed */,
                                               &inst, insn_context);
     if (!next_context) {
-      if (inst_addr == func_address) {
-        inst.pc = inst_addr;
-        inst.arch_name = options.arch->arch_name;
-
-        // Failed to decode the first instruction of the function, but we can
-        // possibly recover via a tail-call to a redirection address!
-        if (inst_addr != func_address) {
-          // TODO(Ian): is this context right?
-          this->BranchToInst(func_address, inst_addr, insn_context, block);
-          continue;
-        }
-      }
-
 
       // TODO(Ian): If we hit this in our new model then the low level lift is a failure and we need to mark this somehow...
       // otherwise we are inventing the abscence of control flow...
@@ -1463,18 +1499,31 @@ void FunctionLifter::RecursivelyInlineLiftedFunctionIntoNativeFunction(void) {
                << remill::LLVMThingToString(native_func->getType());
   }
 
-  llvm::legacy::FunctionPassManager fpm(semantics_module.get());
-  fpm.add(llvm::createCFGSimplificationPass());
-  fpm.add(llvm::createPromoteMemoryToRegisterPass());
-  fpm.add(llvm::createReassociatePass());
-  fpm.add(llvm::createDeadStoreEliminationPass());
-  fpm.add(llvm::createDeadCodeEliminationPass());
-  fpm.add(llvm::createSROAPass());
-  fpm.add(llvm::createDeadCodeEliminationPass());
-  fpm.add(llvm::createInstructionCombiningPass());
-  fpm.doInitialization();
-  fpm.run(*native_func);
-  fpm.doFinalization();
+  llvm::PassBuilder pb;
+  llvm::LoopAnalysisManager lam;
+  llvm::FunctionAnalysisManager fam;
+  llvm::CGSCCAnalysisManager cam;
+  llvm::ModuleAnalysisManager mam;
+  pb.registerModuleAnalyses(mam);
+  pb.registerCGSCCAnalyses(cam);
+  pb.registerFunctionAnalyses(fam);
+  pb.registerLoopAnalyses(lam);
+  pb.crossRegisterProxies(lam, fam, cam, mam);
+
+  llvm::FunctionPassManager fpm;
+  fpm.addPass(llvm::SimplifyCFGPass());
+  fpm.addPass(llvm::PromotePass());
+  fpm.addPass(llvm::ReassociatePass());
+  fpm.addPass(llvm::DSEPass());
+  fpm.addPass(llvm::DCEPass());
+  fpm.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
+  fpm.addPass(llvm::DCEPass());
+  fpm.addPass(llvm::InstCombinePass());
+  fpm.run(*native_func, fam);
+
+  // Clear the analyses before the managers are destroyed.
+  fam.clear();
+  mam.clear();
 
   ClearVariableNames(native_func);
 }

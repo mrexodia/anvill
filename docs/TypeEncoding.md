@@ -26,8 +26,8 @@ The basic elements of the type encoding follows.
 | `B` | 1 | `uint8_t` |
 | `h` | 2 | `int16_t` or `short` |
 | `H` | 2 | `uint16_t` or `unsigned short` |
-| `w` | 4 | `int24_t` |
-| `W` | 4 | `uint24_t` |
+| `w` | 3 | `int24_t` |
+| `W` | 3 | `uint24_t` |
 | `i` | 4 | `int32_t` or `int` |
 | `I` | 4 | `uint32_t` or `unsigned` |
 | `l` | 8 | `int64_t` or `long long` |
@@ -37,12 +37,23 @@ The basic elements of the type encoding follows.
 | `e` | 2 | `float16_t` (IEEE754 half-precision floating point, or `binary16`) |
 | `f` | 4 | `float` (IEEE754 single-precision floating point) |
 | `F` | 8 | `double` (IEEE754 double-precision floating point) |
-| `d` | 10 | `long double` (IEEE754 extended precision floating point) |
-| `D` | 12 | `long double` (IEEE754 extended precision floating point) |
+| `d` | 12 | x86 80-bit `long double` whose storage size is 12 bytes (i386) |
+| `D` | 16 | x86 80-bit `long double` whose storage size is 16 bytes (x86-64) |
 | `M` | 8 | `__m64` (x86 MMX vector type) |
 | `Q` | 16 | `__float128` (IEEE754 quadruple-precision floating point) |
 | `v` | 0 | `void` |
 | `p` | 1 | Padding byte. |
+
+Notes on the C++ implementation (`lib/Type.cpp`):
+
+* `w`/`W` are 24-bit integers (`i24`, 3 bytes). This table used to say 4.
+* The encoder emits `d` when the data layout allocates 12 bytes for
+  `x86_fp80` and `D` otherwise; both denote `x86_fp80`. This table used to
+  say 10 and 12 bytes, which is what the legacy Python generator assumes.
+* The C++ code only *encodes* types this way (for names and diagnostics);
+  specifications describe types with protobuf `TypeSpec` messages.
+* The encoder only emits unsigned letters for integers (`B`, `H`, `W`, `I`,
+  `L`, `O`), because LLVM integer types carry no signedness.
 
 The `v` type is generally not usable (as it does not have a size). It can be
 used in function types and pointer types.

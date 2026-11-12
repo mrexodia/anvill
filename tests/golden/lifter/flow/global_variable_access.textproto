@@ -1,0 +1,25 @@
+# RIP-relative loads and stores of a global variable become direct uses of
+# the lifted global (ConvertAddressesToEntityUses).
+#   int counter;
+#   int bump(int x) { return counter += x; }
+#   401000: 8b 05 fa 2f 00 00 movl 0x2ffa(%rip), %eax # 0x404000 <.text+0x3000>
+#   401006: 01 f8 addl %edi, %eax
+#   401008: 89 05 f2 2f 00 00 movl %eax, 0x2ff2(%rip) # 0x404000 <.text+0x3000>
+#   40100e: c3 retq
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+    parameters { name: "x" repr_var { values { reg { register_name: "EDI" } } type { base: BT_I32 } } }
+    return { values { reg { register_name: "EAX" } } type { base: BT_I32 } }
+  }
+}
+global_variables { address: 0x404000 type { base: BT_I32 } }
+memory_ranges { address: 0x401000 is_executable: true values: "\x8b\x05\xfa\x2f\x00\x00\x01\xf8\x89\x05\xf2\x2f\x00\x00\xc3" }
+memory_ranges { address: 0x404000 is_writeable: true values: "\x00\x00\x00\x00" }
+symbols { name: "bump" address: 0x401000 }
+symbols { name: "counter" address: 0x404000 }

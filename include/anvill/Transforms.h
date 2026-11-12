@@ -356,9 +356,6 @@ void AddRemoveDelaySlotIntrinsics(llvm::FunctionPassManager &fpm);
 // Removes calls to `__remill_error`.
 void AddRemoveErrorIntrinsics(llvm::FunctionPassManager &fpm);
 
-void AddSimplifyStackArithFlags(llvm::FunctionPassManager &fpm,
-                                bool stack_pointer_is_signed);
-
 
 void AddBranchRecovery(llvm::FunctionPassManager &fpm);
 

@@ -30,8 +30,14 @@
 #include <string>
 #include <unordered_set>
 
-DEFINE_string(spec, "", "Path to a JSON specification of code to decompile.");
+DEFINE_string(spec, "",
+              "Path to a protobuf specification of code to decompile. Files "
+              "ending in .textproto or .txtpb are parsed as protobuf text "
+              "format, anything else as binary protobuf.");
 DEFINE_string(ir_out, "", "Path to file where the LLVM IR should be saved.");
+DEFINE_string(ir_pre_opt, "",
+              "Path to file where the LLVM IR should be saved after lifting, "
+              "before the optimization pipeline runs.");
 DEFINE_string(bc_out, "",
               "Path to file where the LLVM bitcode should be "
               "saved.");
@@ -110,8 +116,15 @@ int main(int argc, char *argv[]) {
 #endif
   llvm::Module module("lifted_code", context);
 
+  llvm::StringRef spec_path(FLAGS_spec);
+  const bool is_text_spec =
+      spec_path.ends_with(".textproto") || spec_path.ends_with(".txtpb");
   auto maybe_spec =
-      anvill::Specification::DecodeFromPB(context, buff->getBuffer().str());
+      is_text_spec
+          ? anvill::Specification::DecodeFromTextPB(context,
+                                                    buff->getBuffer().str())
+          : anvill::Specification::DecodeFromPB(context,
+                                                buff->getBuffer().str());
 
   if (!maybe_spec.Succeeded()) {
     std::cerr << maybe_spec.TakeError() << std::endl;
@@ -145,6 +158,7 @@ int main(int argc, char *argv[]) {
       std::cerr << "default callable_spec did not parse as callable decl: "
                 << FLAGS_default_callable_spec << " "
                 << maybe_default_callable.TakeError() << std::endl;
+      return EXIT_FAILURE;
     }
 
     remill::ArchName arch_name = spec.Arch().get()->arch_name;
@@ -165,6 +179,9 @@ int main(int argc, char *argv[]) {
   // Annotate instructions with `!pc` metadata that (approximately) tells us
   // where they are from.
   options.pc_metadata_name = "pc";
+
+  // Add `breakpoint_<addr>` calls before every lifted instruction.
+  options.add_breakpoints = FLAGS_add_breakpoints;
 
   // Annotate instructions with `!stack_offset` metadata that tells us where,
   // relative to the stack pointer value on entry to a function, the pointer
@@ -217,7 +234,7 @@ int main(int argc, char *argv[]) {
     } else {
       func = lifter.DeclareEntity(*decl);
     }
-    if (FLAGS_add_names) {
+    if (func && FLAGS_add_names) {
       if (auto name_it = names.find(decl->address); name_it != names.end()) {
         func->setName(name_it->second);
       }
@@ -227,7 +244,7 @@ int main(int argc, char *argv[]) {
 
   spec.ForEachVariable([&lifter, &names](auto decl) {
     llvm::Constant *cv = lifter.LiftEntity(*decl);
-    if (FLAGS_add_names) {
+    if (cv && FLAGS_add_names) {
       if (auto name_it = names.find(decl->address); name_it != names.end()) {
         if (llvm::GlobalValue *gv = llvm::dyn_cast<llvm::GlobalValue>(cv)) {
           gv->setName(name_it->second);
@@ -241,7 +258,38 @@ int main(int argc, char *argv[]) {
     llvm::EnableStatistics();
   }
 
+  if (!FLAGS_ir_pre_opt.empty()) {
+    if (!remill::StoreModuleIRToFile(&module, FLAGS_ir_pre_opt, true)) {
+      std::cerr << "Could not save LLVM IR to " << FLAGS_ir_pre_opt << '\n';
+      return EXIT_FAILURE;
+    }
+  }
+
   anvill::OptimizeModule(lifter, module);
+
+  // Optimization can delete unreferenced declarations and re-create them when
+  // a reference is later recovered (e.g. a callee only reached through its
+  // address). Apply the symbol names again to every entity that still has a
+  // default `sub_`/`var_` name.
+  if (FLAGS_add_names) {
+    auto rename = [&](llvm::GlobalObject &gv) {
+      const auto name = gv.getName();
+      if (!name.starts_with("sub_") && !name.starts_with("var_")) {
+        return;
+      }
+      if (auto addr = lifter.AddressOfEntity(&gv)) {
+        if (auto name_it = names.find(*addr); name_it != names.end()) {
+          gv.setName(name_it->second);
+        }
+      }
+    };
+    for (auto &func : module) {
+      rename(func);
+    }
+    for (auto &var : module.globals()) {
+      rename(var);
+    }
+  }
 
   int ret = EXIT_SUCCESS;
 

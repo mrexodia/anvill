@@ -1,0 +1,200 @@
+# Compiled C on SPARC32: the functions of sparc_compiled.c (shifts and logic,
+# multiply and divide through %y, sign/zero-extending loads and narrow
+# stores, float<->int conversion, float arithmetic, float compare-and-branch
+# or conditional move, integer conditional move or branch, and a switch
+# lowered to compares), compiled with clang -O2 for sparc-linux-gnu.
+# Each optimized function should compute what the C source says.
+#   tests/golden/tools/assemble.py --no-link --triple sparc-linux-gnu \
+#       tests/golden/lifter/arch/sparc_compiled.c
+#   401000: 95 2a 20 03 sll %o0, 3, %o2
+#   401004: 97 3a 60 02 sra %o1, 2, %o3
+#   401008: 94 1a c0 0a xor %o3, %o2, %o2
+#   40100c: 90 2a 00 09 andn %o0, %o1, %o0
+#   401010: 81 c3 e0 08 retl
+#   401014: 90 12 80 08 or %o2, %o0, %o0
+#   401018: 92 0a 60 1f and %o1, 31, %o1
+#   40101c: 81 c3 e0 08 retl
+#   401020: 91 32 00 09 srl %o0, %o1, %o0
+#   401024: 94 5a 40 08 smul %o1, %o0, %o2
+#   401028: 97 3a 20 1f sra %o0, 31, %o3
+#   40102c: 81 80 00 0b wr %g0, %o3, %y
+#   401030: 96 7a 00 09 sdiv %o0, %o1, %o3
+#   401034: 94 02 c0 0a add %o3, %o2, %o2
+#   401038: 92 5a c0 09 smul %o3, %o1, %o1
+#   40103c: 90 22 00 09 sub %o0, %o1, %o0
+#   401040: 81 c3 e0 08 retl
+#   401044: 90 02 80 08 add %o2, %o0, %o0
+#   401048: 81 80 00 00 wr %g0, %g0, %y
+#   40104c: 90 72 00 09 udiv %o0, %o1, %o0
+#   401050: 81 c3 e0 08 retl
+#   401054: 01 00 00 00 nop
+#   401058: d0 4a 20 01 ldsb [%o0+1], %o0
+#   40105c: d2 52 60 04 ldsh [%o1+4], %o1
+#   401060: d4 0a a0 03 ldub [%o2+3], %o2
+#   401064: 90 02 40 08 add %o1, %o0, %o0
+#   401068: 81 c3 e0 08 retl
+#   40106c: 90 02 00 0a add %o0, %o2, %o0
+#   401070: d4 2a 00 00 stb %o2, [%o0]
+#   401074: 91 32 a0 08 srl %o2, 8, %o0
+#   401078: 81 c3 e0 08 retl
+#   40107c: d0 32 60 02 sth %o0, [%o1+2]
+#   401080: 9c 03 bf 98 add %sp, -104, %sp
+#   401084: d0 23 a0 64 st %o0, [%sp+100]
+#   401088: c1 03 a0 64 ld [%sp+100], %f0
+#   40108c: 81 a0 1a 20 fstoi %f0, %f0
+#   401090: c1 23 a0 60 st %f0, [%sp+96]
+#   401094: d0 03 a0 60 ld [%sp+96], %o0
+#   401098: 81 c3 e0 08 retl
+#   40109c: 9c 03 a0 68 add %sp, 104, %sp
+#   4010a0: 9c 03 bf a0 add %sp, -96, %sp
+#   4010a4: d0 23 a0 5c st %o0, [%sp+92]
+#   4010a8: c1 03 a0 5c ld [%sp+92], %f0
+#   4010ac: 81 a0 19 00 fitod %f0, %f0
+#   4010b0: 81 c3 e0 08 retl
+#   4010b4: 9c 03 a0 60 add %sp, 96, %sp
+#   4010b8: 9c 03 bf 98 add %sp, -104, %sp
+#   4010bc: d2 23 a0 64 st %o1, [%sp+100]
+#   4010c0: d0 23 a0 60 st %o0, [%sp+96]
+#   4010c4: c1 03 a0 64 ld [%sp+100], %f0
+#   4010c8: c3 03 a0 60 ld [%sp+96], %f1
+#   4010cc: 81 a0 49 20 fmuls %f1, %f0, %f0
+#   4010d0: 81 a0 08 21 fadds %f0, %f1, %f0
+#   4010d4: 81 a0 1a 20 fstoi %f0, %f0
+#   4010d8: c1 23 a0 5c st %f0, [%sp+92]
+#   4010dc: d0 03 a0 5c ld [%sp+92], %o0
+#   4010e0: 81 c3 e0 08 retl
+#   4010e4: 9c 03 a0 68 add %sp, 104, %sp
+#   4010e8: 9c 03 bf 98 add %sp, -104, %sp
+#   4010ec: d2 23 a0 64 st %o1, [%sp+100]
+#   4010f0: d0 23 a0 60 st %o0, [%sp+96]
+#   4010f4: c1 03 a0 64 ld [%sp+100], %f0
+#   4010f8: c3 03 a0 60 ld [%sp+96], %f1
+#   4010fc: 81 a8 4a 20 fcmps %f1, %f0
+#   401100: 01 00 00 00 nop
+#   401104: 09 80 00 05 fbl 5
+#   401108: 01 00 00 00 nop
+#   40110c: 90 10 20 14 mov 20, %o0
+#   401110: 81 c3 e0 08 retl
+#   401114: 9c 03 a0 68 add %sp, 104, %sp
+#   401118: 90 10 20 0a mov 10, %o0
+#   40111c: 81 c3 e0 08 retl
+#   401120: 9c 03 a0 68 add %sp, 104, %sp
+#   401124: 80 a2 00 09 cmp %o0, %o1
+#   401128: 14 80 00 03 bg 3
+#   40112c: 01 00 00 00 nop
+#   401130: 90 10 00 09 mov %o1, %o0
+#   401134: 81 c3 e0 08 retl
+#   401138: 01 00 00 00 nop
+#   40113c: 80 a2 20 04 cmp %o0, 4
+#   401140: 14 80 00 0a bg 10
+#   401144: 01 00 00 00 nop
+#   401148: 80 a2 20 00 cmp %o0, 0
+#   40114c: 02 80 00 11 be 17
+#   401150: 01 00 00 00 nop
+#   401154: 80 a2 20 01 cmp %o0, 1
+#   401158: 12 80 00 0c bne 12
+#   40115c: 01 00 00 00 nop
+#   401160: 81 c3 e0 08 retl
+#   401164: 90 10 20 16 mov 22, %o0
+#   401168: 80 a2 20 05 cmp %o0, 5
+#   40116c: 02 80 00 0b be 11
+#   401170: 01 00 00 00 nop
+#   401174: 80 a2 20 09 cmp %o0, 9
+#   401178: 12 80 00 04 bne 4
+#   40117c: 01 00 00 00 nop
+#   401180: 81 c3 e0 08 retl
+#   401184: 90 10 20 2c mov 44, %o0
+#   401188: 81 c3 e0 08 retl
+#   40118c: 90 10 20 37 mov 55, %o0
+#   401190: 81 c3 e0 08 retl
+#   401194: 90 10 20 0b mov 11, %o0
+#   401198: 81 c3 e0 08 retl
+#   40119c: 90 10 20 21 mov 33, %o0
+# RUN: --add_names
+arch: ARCH_SPARC32
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { base: BT_I32 } arguments { base: BT_I32 } } }
+  }
+}
+functions {
+  entry_address: 0x401018
+  callable {
+    type { function { return_type { base: BT_U32 } arguments { base: BT_U32 } arguments { base: BT_U32 } } }
+  }
+}
+functions {
+  entry_address: 0x401024
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { base: BT_I32 } arguments { base: BT_I32 } } }
+  }
+}
+functions {
+  entry_address: 0x401048
+  callable {
+    type { function { return_type { base: BT_U32 } arguments { base: BT_U32 } arguments { base: BT_U32 } } }
+  }
+}
+functions {
+  entry_address: 0x401058
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { pointer { pointee { base: BT_I8 } } } arguments { pointer { pointee { base: BT_I16 } } } arguments { pointer { pointee { base: BT_U8 } } } } }
+  }
+}
+functions {
+  entry_address: 0x401070
+  callable {
+    type { function { return_type { base: BT_VOID } arguments { pointer { pointee { base: BT_I8 } } } arguments { pointer { pointee { base: BT_I16 } } } arguments { base: BT_I32 } } }
+  }
+}
+functions {
+  entry_address: 0x401080
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { base: BT_FL32 } } }
+  }
+}
+functions {
+  entry_address: 0x4010a0
+  callable {
+    type { function { return_type { base: BT_FL64 } arguments { base: BT_I32 } } }
+  }
+}
+functions {
+  entry_address: 0x4010b8
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { base: BT_FL32 } arguments { base: BT_FL32 } } }
+  }
+}
+functions {
+  entry_address: 0x4010e8
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { base: BT_FL32 } arguments { base: BT_FL32 } } }
+  }
+}
+functions {
+  entry_address: 0x401124
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { base: BT_I32 } arguments { base: BT_I32 } } }
+  }
+}
+functions {
+  entry_address: 0x40113c
+  callable {
+    type { function { return_type { base: BT_I32 } arguments { base: BT_I32 } } }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x95\x2a\x20\x03\x97\x3a\x60\x02\x94\x1a\xc0\x0a\x90\x2a\x00\x09\x81\xc3\xe0\x08\x90\x12\x80\x08\x92\x0a\x60\x1f\x81\xc3\xe0\x08\x91\x32\x00\x09\x94\x5a\x40\x08\x97\x3a\x20\x1f\x81\x80\x00\x0b\x96\x7a\x00\x09\x94\x02\xc0\x0a\x92\x5a\xc0\x09\x90\x22\x00\x09\x81\xc3\xe0\x08\x90\x02\x80\x08\x81\x80\x00\x00\x90\x72\x00\x09\x81\xc3\xe0\x08\x01\x00\x00\x00\xd0\x4a\x20\x01\xd2\x52\x60\x04\xd4\x0a\xa0\x03\x90\x02\x40\x08\x81\xc3\xe0\x08\x90\x02\x00\x0a\xd4\x2a\x00\x00\x91\x32\xa0\x08\x81\xc3\xe0\x08\xd0\x32\x60\x02\x9c\x03\xbf\x98\xd0\x23\xa0\x64\xc1\x03\xa0\x64\x81\xa0\x1a\x20\xc1\x23\xa0\x60\xd0\x03\xa0\x60\x81\xc3\xe0\x08\x9c\x03\xa0\x68\x9c\x03\xbf\xa0\xd0\x23\xa0\x5c\xc1\x03\xa0\x5c\x81\xa0\x19\x00\x81\xc3\xe0\x08\x9c\x03\xa0\x60\x9c\x03\xbf\x98\xd2\x23\xa0\x64\xd0\x23\xa0\x60\xc1\x03\xa0\x64\xc3\x03\xa0\x60\x81\xa0\x49\x20\x81\xa0\x08\x21\x81\xa0\x1a\x20\xc1\x23\xa0\x5c\xd0\x03\xa0\x5c\x81\xc3\xe0\x08\x9c\x03\xa0\x68\x9c\x03\xbf\x98\xd2\x23\xa0\x64\xd0\x23\xa0\x60\xc1\x03\xa0\x64\xc3\x03\xa0\x60\x81\xa8\x4a\x20\x01\x00\x00\x00\x09\x80\x00\x05\x01\x00\x00\x00\x90\x10\x20\x14\x81\xc3\xe0\x08\x9c\x03\xa0\x68\x90\x10\x20\x0a\x81\xc3\xe0\x08\x9c\x03\xa0\x68\x80\xa2\x00\x09\x14\x80\x00\x03\x01\x00\x00\x00\x90\x10\x00\x09\x81\xc3\xe0\x08\x01\x00\x00\x00\x80\xa2\x20\x04\x14\x80\x00\x0a\x01\x00\x00\x00\x80\xa2\x20\x00\x02\x80\x00\x11\x01\x00\x00\x00\x80\xa2\x20\x01\x12\x80\x00\x0c\x01\x00\x00\x00\x81\xc3\xe0\x08\x90\x10\x20\x16\x80\xa2\x20\x05\x02\x80\x00\x0b\x01\x00\x00\x00\x80\xa2\x20\x09\x12\x80\x00\x04\x01\x00\x00\x00\x81\xc3\xe0\x08\x90\x10\x20\x2c\x81\xc3\xe0\x08\x90\x10\x20\x37\x81\xc3\xe0\x08\x90\x10\x20\x0b\x81\xc3\xe0\x08\x90\x10\x20\x21" }
+symbols { name: "shifts_logic" address: 0x401000 }
+symbols { name: "shift_right" address: 0x401018 }
+symbols { name: "mul_div" address: 0x401024 }
+symbols { name: "udiv" address: 0x401048 }
+symbols { name: "load_extend" address: 0x401058 }
+symbols { name: "store_narrow" address: 0x401070 }
+symbols { name: "float_to_int" address: 0x401080 }
+symbols { name: "int_to_double" address: 0x4010a0 }
+symbols { name: "float_math" address: 0x4010b8 }
+symbols { name: "float_less" address: 0x4010e8 }
+symbols { name: "select_max" address: 0x401124 }
+symbols { name: "switch_case" address: 0x40113c }

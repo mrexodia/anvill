@@ -229,8 +229,40 @@ define i32 @sub_0__Aiii_B_0(i32 %0, i32 %1) #0 {
   store i32 %82, ptr %30, align 4
   %108 = ptrtoint ptr %4 to i32
   store i32 %108, ptr %52, align 4
-  store i32 or (i32 or (i32 or (i32 shl (i32 zext (i8 trunc (i32 lshr (i32 ptrtoint (ptr @__anvill_ra to i32), i32 24) to i8) to i32), i32 24), i32 shl (i32 zext (i8 trunc (i32 lshr (i32 ptrtoint (ptr @__anvill_ra to i32), i32 16) to i8) to i32), i32 16)), i32 shl (i32 zext (i8 trunc (i32 lshr (i32 ptrtoint (ptr @__anvill_ra to i32), i32 8) to i8) to i32), i32 8)), i32 zext (i8 ptrtoint (ptr @__anvill_ra to i8) to i32)), ptr %56, align 4
-  %109 = call ptr @__remill_jump(ptr %21, i32 or (i32 or (i32 or (i32 shl (i32 zext (i8 trunc (i32 lshr (i32 ptrtoint (ptr @__anvill_ra to i32), i32 24) to i8) to i32), i32 24), i32 shl (i32 zext (i8 trunc (i32 lshr (i32 ptrtoint (ptr @__anvill_ra to i32), i32 16) to i8) to i32), i32 16)), i32 shl (i32 zext (i8 trunc (i32 lshr (i32 ptrtoint (ptr @__anvill_ra to i32), i32 8) to i8) to i32), i32 8)), i32 zext (i8 ptrtoint (ptr @__anvill_ra to i8) to i32)), ptr null)
+  %ce.1 = lshr i32 ptrtoint (ptr @__anvill_ra to i32), 24
+  %ce.2 = trunc i32 %ce.1 to i8
+  %ce.3 = zext i8 %ce.2 to i32
+  %ce.4 = shl i32 %ce.3, 24
+  %ce.5 = lshr i32 ptrtoint (ptr @__anvill_ra to i32), 16
+  %ce.6 = trunc i32 %ce.5 to i8
+  %ce.7 = zext i8 %ce.6 to i32
+  %ce.8 = shl i32 %ce.7, 16
+  %ce.9 = or i32 %ce.4, %ce.8
+  %ce.10 = lshr i32 ptrtoint (ptr @__anvill_ra to i32), 8
+  %ce.11 = trunc i32 %ce.10 to i8
+  %ce.12 = zext i8 %ce.11 to i32
+  %ce.13 = shl i32 %ce.12, 8
+  %ce.14 = or i32 %ce.9, %ce.13
+  %ce.15 = zext i8 ptrtoint (ptr @__anvill_ra to i8) to i32
+  %ce.16 = or i32 %ce.14, %ce.15
+  store i32 %ce.16, ptr %56, align 4
+  %ce.17 = lshr i32 ptrtoint (ptr @__anvill_ra to i32), 24
+  %ce.18 = trunc i32 %ce.17 to i8
+  %ce.19 = zext i8 %ce.18 to i32
+  %ce.20 = shl i32 %ce.19, 24
+  %ce.21 = lshr i32 ptrtoint (ptr @__anvill_ra to i32), 16
+  %ce.22 = trunc i32 %ce.21 to i8
+  %ce.23 = zext i8 %ce.22 to i32
+  %ce.24 = shl i32 %ce.23, 16
+  %ce.25 = or i32 %ce.20, %ce.24
+  %ce.26 = lshr i32 ptrtoint (ptr @__anvill_ra to i32), 8
+  %ce.27 = trunc i32 %ce.26 to i8
+  %ce.28 = zext i8 %ce.27 to i32
+  %ce.29 = shl i32 %ce.28, 8
+  %ce.30 = or i32 %ce.25, %ce.29
+  %ce.31 = zext i8 ptrtoint (ptr @__anvill_ra to i8) to i32
+  %ce.32 = or i32 %ce.30, %ce.31
+  %109 = call ptr @__remill_jump(ptr %21, i32 %ce.32, ptr null)
   %110 = load i32, ptr %26, align 4
   ret i32 %110
 }

@@ -39,6 +39,9 @@ class SpecificationImpl
  public:
   ~SpecificationImpl(void);
 
+  // Return the variable whose bytes include `address`, or `nullptr`.
+  const VariableDecl *VariableContaining(std::uint64_t address) const;
+
   // Architecture used by all of the function and global variable declarations.
   const std::unique_ptr<const remill::Arch> arch;
 

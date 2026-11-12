@@ -1,0 +1,24 @@
+# A conditional branch is lifted as a `br` on remill's BRANCH_TAKEN variable
+# between the taken target and the fall-through; each `ret` is a separate
+# return.
+#   int pick(int x) { return x ? 10 : 20; }
+#   401000: 85 ff testl %edi, %edi
+#   401002: 74 06 je 0x40100a <.text+0xa>
+#   401004: b8 0a 00 00 00 movl $0xa, %eax
+#   401009: c3 retq
+#   40100a: b8 14 00 00 00 movl $0x14, %eax
+#   40100f: c3 retq
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+    parameters { name: "x" repr_var { values { reg { register_name: "EDI" } } type { base: BT_I32 } } }
+    return { values { reg { register_name: "EAX" } } type { base: BT_I32 } }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x85\xff\x74\x06\xb8\x0a\x00\x00\x00\xc3\xb8\x14\x00\x00\x00\xc3" }
+symbols { name: "pick" address: 0x401000 }

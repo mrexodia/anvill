@@ -191,16 +191,27 @@ SizeAndType AllocationState::AssignSizeAndType(llvm::Type &type) {
   return {size_constraint, type_constraint};
 }
 
-llvm::Optional<std::vector<ValueDecl>>
+std::optional<std::vector<ValueDecl>>
 AllocationState::TryRegisterAllocate(llvm::Type &type) {
   if (type.isStructTy() || type.isArrayTy() || type.isVectorTy()) {
-    return TryCompositeRegisterAllocate(type);
+
+    // A composite that does not fit must not leave its partially allocated
+    // registers behind: the whole value goes to memory, and later values
+    // can still use those registers.
+    auto saved_reserved = reserved;
+    auto saved_fill = fill;
+    auto ret = TryCompositeRegisterAllocate(type);
+    if (!ret) {
+      reserved = std::move(saved_reserved);
+      fill = std::move(saved_fill);
+    }
+    return ret;
   } else {
-    return TryBasicRegisterAllocate(type, llvm::None);
+    return TryBasicRegisterAllocate(type, std::nullopt);
   }
 }
 
-llvm::Optional<std::vector<ValueDecl>>
+std::optional<std::vector<ValueDecl>>
 AllocationState::TryCompositeRegisterAllocate(llvm::Type &type) {
   DCHECK(type.isStructTy() || type.isArrayTy() || type.isVectorTy());
   std::vector<ValueDecl> ret;
@@ -214,7 +225,7 @@ AllocationState::TryCompositeRegisterAllocate(llvm::Type &type) {
         ret.insert(ret.end(), inner->begin(), inner->end());
       } else {
         config.can_pack_multiple_values_together = prev_pack;
-        return llvm::None;
+        return std::nullopt;
       }
     }
 
@@ -229,12 +240,14 @@ AllocationState::TryCompositeRegisterAllocate(llvm::Type &type) {
         ret.insert(ret.end(), inner->begin(), inner->end());
       } else {
         config.can_pack_multiple_values_together = prev_pack;
-        return llvm::None;
+        return std::nullopt;
       }
     }
   } else if (auto vec = llvm::dyn_cast<llvm::FixedVectorType>(&type)) {
     if (auto inner = TryVectorRegisterAllocate(*vec); inner) {
       ret.insert(ret.end(), inner->begin(), inner->end());
+    } else {
+      return std::nullopt;
     }
   } else {
     LOG(FATAL) << "Trying to allocate for an unknown composite type: "
@@ -243,13 +256,13 @@ AllocationState::TryCompositeRegisterAllocate(llvm::Type &type) {
   return ret;
 }
 
-llvm::Optional<std::vector<ValueDecl>>
+std::optional<std::vector<ValueDecl>>
 AllocationState::TryBasicRegisterAllocate(llvm::Type &type,
-                                          llvm::Optional<SizeAndType> hint) {
+                                          std::optional<SizeAndType> hint) {
 
   DCHECK(!(type.isStructTy() || type.isArrayTy() || type.isVectorTy()));
   std::vector<ValueDecl> ret;
-  SizeAndType st = (hint) ? hint.getValue() : AssignSizeAndType(type);
+  SizeAndType st = (hint) ? hint.value() : AssignSizeAndType(type);
   uint64_t size = SizeConstraintToMinSize(st.sc);
 
   auto has_free_regs = false;
@@ -285,7 +298,7 @@ AllocationState::TryBasicRegisterAllocate(llvm::Type &type,
       const auto &reg_name =
           GetSmallestVariantName(constraints[i].variants, fill[i]);
       if (reg_name.empty()) {
-        return llvm::None;
+        return std::nullopt;
       }
 
       auto reg = arch->RegisterByName(reg_name);
@@ -306,14 +319,26 @@ AllocationState::TryBasicRegisterAllocate(llvm::Type &type,
       return TryRegisterAllocate(*split_type);
     }
   }
-  return llvm::None;
+  return std::nullopt;
 }
 
-llvm::Optional<std::vector<ValueDecl>>
+std::optional<std::vector<ValueDecl>>
 AllocationState::TryVectorRegisterAllocate(llvm::FixedVectorType &type) {
   std::vector<ValueDecl> ret;
   unsigned vec_size = type.getNumElements();
   const auto elem_type = type.getElementType();
+
+  // Floating-point vectors (e.g. `<4 x float>`, an SSE/NEON value) are
+  // allocated as a single value of the vector's width in a register that
+  // accepts floats or vectors. (Previously this aborted.)
+  if (elem_type->isFloatingPointTy()) {
+    const auto bits = type.getPrimitiveSizeInBits().getFixedValue();
+    const SizeConstraint sc =
+        bits <= 8 ? kMinBit8 : bits <= 16 ? kMinBit16 :
+        bits <= 32 ? kMinBit32 : bits <= 64 ? kMinBit64 :
+        bits <= 128 ? kMinBit128 : bits <= 256 ? kMinBit256 : kMinBit512;
+    return TryBasicRegisterAllocate(type, SizeAndType(sc, kTypeFloatOrVec));
+  }
 
   for (unsigned i = 0; i < vec_size; i++) {
 
@@ -327,7 +352,7 @@ AllocationState::TryVectorRegisterAllocate(llvm::FixedVectorType &type) {
                                                  t->getBitWidth())) {
           ret.insert(ret.end(), inner->begin(), inner->end());
         } else {
-          return llvm::None;
+          return std::nullopt;
         }
       } else {
 
@@ -339,7 +364,7 @@ AllocationState::TryVectorRegisterAllocate(llvm::FixedVectorType &type) {
           ret.insert(ret.end(), inner->begin(), inner->end());
         } else {
           config.can_pack_multiple_values_together = prev_pack;
-          return llvm::None;
+          return std::nullopt;
         }
       }
     } else {
@@ -351,7 +376,7 @@ AllocationState::TryVectorRegisterAllocate(llvm::FixedVectorType &type) {
   if (!ret.empty()) {
     return ret;
   }
-  return llvm::None;
+  return std::nullopt;
 }
 
 // +----------------------------------------------------------------------+
@@ -389,7 +414,7 @@ AllocationState::TryVectorRegisterAllocate(llvm::FixedVectorType &type) {
 // +----------+-----+---------------+-----------+------------+------------+
 // Note: i128 is all RVO for sizes 2+.
 
-llvm::Optional<std::vector<ValueDecl>> AllocationState::ProcessIntVecX86_64SysV(
+std::optional<std::vector<ValueDecl>> AllocationState::ProcessIntVecX86_64SysV(
     llvm::Type *elem_type, unsigned vec_size, unsigned bit_width) {
   const auto prev_pack = config.can_pack_multiple_values_together;
   switch (bit_width) {
@@ -482,7 +507,7 @@ llvm::Optional<std::vector<ValueDecl>> AllocationState::ProcessIntVecX86_64SysV(
 
     default: LOG(FATAL) << "Invalid bit width: " << bit_width; break;
   }
-  return llvm::None;
+  return std::nullopt;
 }
 
 // Coalesce any packed registers into structs that contain the packed types.

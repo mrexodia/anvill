@@ -260,6 +260,14 @@ void CallableDecl::OverrideFunctionTypeWithABIParamLayout() {
 
 void CallableDecl::OverrideFunctionTypeWithABIReturnLayout() {
   if (this->returns.size() < 1) {
+
+    // No return locations (e.g. an AArch64 result returned through the
+    // buffer addressed by X8): the function returns nothing at the ABI
+    // level. (Previously the declared return type was kept, so a lifted
+    // function had a non-void return type but nowhere to read it from.)
+    this->type = llvm::FunctionType::get(
+        llvm::Type::getVoidTy(this->type->getContext()), this->type->params(),
+        this->type->isVarArg());
     return;
   } else if (this->returns.size() == 1) {
     // Override the return type with the type of the last return

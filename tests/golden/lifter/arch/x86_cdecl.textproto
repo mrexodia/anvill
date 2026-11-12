@@ -1,0 +1,24 @@
+# 32-bit x86 cdecl with a type-only prototype: the allocator puts both
+# arguments on the stack in 4-byte slots ([ESP + 4], [ESP + 8]) and the
+# result in EAX; the caller pops the arguments (ESP + 4 after the return).
+#   int add(int a, int b) { return a + b; }
+#   401000: 8b 44 24 04 movl 0x4(%esp), %eax
+#   401004: 03 44 24 08 addl 0x8(%esp), %eax
+#   401008: c3 retl
+# RUN: --add_names
+arch: ARCH_X86
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    type {
+      function {
+        return_type { base: BT_I32 }
+        arguments { base: BT_I32 }
+        arguments { base: BT_I32 }
+      }
+    }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x8b\x44\x24\x04\x03\x44\x24\x08\xc3" }
+symbols { name: "add" address: 0x401000 }

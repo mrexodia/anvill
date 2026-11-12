@@ -56,7 +56,7 @@ llvm::Constant *DataLifter::GetOrDeclareData(const VariableDecl &decl,
       } else if (auto ce = llvm::dyn_cast<llvm::ConstantExpr>(v)) {
         auto ce_type = llvm::dyn_cast<llvm::PointerType>(ce->getType());
         CHECK_NOTNULL(ce_type);
-        found_by_address = ga;
+        found_by_address = ce;
       }
     }
   });
@@ -120,7 +120,7 @@ llvm::Constant *DataLifter::GetOrDeclareData(const VariableDecl &decl,
     const auto address_space =
         found_by_address->getType()->getPointerAddressSpace();
     const auto ce = llvm::ConstantExpr::getBitCast(
-        found_by_address, type->getPointerTo(address_space));
+        found_by_address, llvm::PointerType::get(context, address_space));
     lifter_context.AddEntity(ce, decl.address);
     return wrap_with_alias(ce);
   }

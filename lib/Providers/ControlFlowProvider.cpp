@@ -25,7 +25,11 @@ SpecificationControlFlowProvider::SpecificationControlFlowProvider(
     : impl(spec.impl) {}
 
 ControlFlowOverride SpecificationControlFlowProvider::GetControlFlowOverride(uint64_t addr) const {
-  return impl->control_flow_overrides[addr];
+  auto it = impl->control_flow_overrides.find(addr);
+  if (it == impl->control_flow_overrides.end()) {
+    return {};
+  }
+  return it->second;
 }
 
 }  // namespace anvill

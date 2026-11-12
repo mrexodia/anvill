@@ -1,0 +1,35 @@
+# An indirect call whose prototype comes from a Callsite entry (keyed by the
+# containing function and the call address). The call goes through the
+# loaded function pointer.
+#   int apply(int (*fp)(int), int x) { return fp(x); }
+#   401000: 50 pushq %rax
+#   401001: 48 89 f8 movq %rdi, %rax
+#   401004: 89 f7 movl %esi, %edi
+#   401006: ff d0 callq *%rax
+#   401008: 59 popq %rcx
+#   401009: c3 retq
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+    parameters { name: "fp" repr_var { values { reg { register_name: "RDI" } } type { pointer {} } } }
+    parameters { name: "x" repr_var { values { reg { register_name: "ESI" } } type { base: BT_I32 } } }
+    return { values { reg { register_name: "EAX" } } type { base: BT_I32 } }
+  }
+}
+callsites {
+  call_address: 0x401006
+  inside_function_address: 0x401000
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+    parameters { name: "x" repr_var { values { reg { register_name: "EDI" } } type { base: BT_I32 } } }
+    return { values { reg { register_name: "EAX" } } type { base: BT_I32 } }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x50\x48\x89\xf8\x89\xf7\xff\xd0\x59\xc3" }
+symbols { name: "apply" address: 0x401000 }

@@ -1,0 +1,22 @@
+# AArch64 with a type-only prototype: arguments in W0 and W1, the result in
+# W0, the return address in X30 (LR).
+#   int add(int a, int b) { return a + b; }
+#   401000: 0b010000 add w0, w0, w1
+#   401004: d65f03c0 ret
+# RUN: --add_names
+arch: ARCH_AARCH64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    type {
+      function {
+        return_type { base: BT_I32 }
+        arguments { base: BT_I32 }
+        arguments { base: BT_I32 }
+      }
+    }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x00\x00\x01\x0b\xc0\x03\x5f\xd6" }
+symbols { name: "add" address: 0x401000 }

@@ -1,0 +1,24 @@
+# SPARC V9 (64-bit) leaf function, lifted with remill's Sleigh-based
+# `sparc64` architecture: the 64-bit addition in the delay slot of
+# `retl` is part of the same decoded instruction. Arguments in O0 and O1,
+# result in O0, return address in O7 (V9 ABI, see AllocateSignatures/sparc64).
+#   long add(long a, long b) { return a + b; }
+#   401000: 81 c3 e0 08 retl
+#   401004: 90 02 00 09 add %o0, %o1, %o0
+# RUN: --add_names
+arch: ARCH_SPARC64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    type {
+      function {
+        return_type { base: BT_I64 }
+        arguments { base: BT_I64 }
+        arguments { base: BT_I64 }
+      }
+    }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x81\xc3\xe0\x08\x90\x02\x00\x09" }
+symbols { name: "add" address: 0x401000 }

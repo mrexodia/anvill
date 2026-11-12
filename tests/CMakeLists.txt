@@ -8,3 +8,4 @@
 
 add_subdirectory("tools")
 add_subdirectory("anvill_passes")
+add_subdirectory("golden")

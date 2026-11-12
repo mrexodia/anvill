@@ -1,0 +1,17 @@
+# `syscall` is an asynchronous hyper call: the block ends with a tail call to
+# `__remill_async_hyper_call`.
+#   401000: b8 3c 00 00 00 movl $0x3c, %eax
+#   401005: 0f 05 syscall
+#   401007: c3 retq
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\xb8\x3c\x00\x00\x00\x0f\x05\xc3" }
+symbols { name: "do_exit" address: 0x401000 }

@@ -222,7 +222,7 @@ X86_C::BindReturnValues(llvm::Function &function, bool &injected_sret,
         AllocationState alloc_ret(return_register_constraints, arch, this);
         auto mapping = alloc_ret.TryRegisterAllocate(*ret_type);
         if (mapping) {
-          mapping.getValue().swap(ret_values);
+          mapping.value().swap(ret_values);
           return llvm::Error::success();
 
         } else {
@@ -253,12 +253,14 @@ X86_C::BindReturnValues(llvm::Function &function, bool &injected_sret,
       return llvm::Error::success();
     }
 
+#if LLVM_VERSION_MAJOR < 20
     case llvm::Type::X86_MMXTyID: {
       auto &value_declaration = ret_values.emplace_back();
       value_declaration.reg = arch->RegisterByName("MM0");
       value_declaration.type = ret_type;
       return llvm::Error::success();
     }
+#endif
 
     // Try to split the composite type over registers, and fall back on RVO
     // if it's not possible.
@@ -270,7 +272,7 @@ X86_C::BindReturnValues(llvm::Function &function, bool &injected_sret,
 
       // There is a valid split over registers, so add the mapping
       if (mapping) {
-        return alloc_ret.CoalescePacking(mapping.getValue(), ret_values);
+        return alloc_ret.CoalescePacking(mapping.value(), ret_values);
 
       // Composite type splitting didn't work so do RVO. Assume that the
       // pointer to the return value resides in RAX.
@@ -298,7 +300,7 @@ X86_C::BindParameters(llvm::Function &function, bool injected_sret,
                       std::vector<ParameterDecl> &parameter_declarations) {
 
   auto param_names = TryRecoverParamNames(function);
-  llvm::DataLayout dl(function.getParent());
+  const llvm::DataLayout &dl = function.getParent()->getDataLayout();
 
   // stack_offset describes the position of the first stack argument on entry to
   // the callee. For X86_C, this is at [esp + 4] because the return address is
@@ -307,16 +309,18 @@ X86_C::BindParameters(llvm::Function &function, bool injected_sret,
 
   const auto esp_reg = arch->RegisterByName("ESP");
 
-  // If there is an injected sret (an implicit sret) then we need to allocate
-  // the first parameter to the sret struct. The type of said sret parameter
-  // will be the return type of the function.
+  // If the return value is returned in memory, then the caller passes a
+  // hidden pointer to its storage as the first stack argument. (Previously
+  // this parameter was typed as the returned aggregate itself, which also
+  // shifted every following argument by the aggregate's size.)
   if (injected_sret) {
     auto &decl = parameter_declarations.emplace_back();
 
-    decl.type = function.getReturnType();
+    decl.name = "__struct_ret_ptr";
+    decl.type = llvm::PointerType::get(function.getContext(), 0);
     decl.mem_offset = static_cast<int64_t>(stack_offset);
     decl.mem_reg = esp_reg;
-    stack_offset += dl.getTypeAllocSize(decl.type);
+    stack_offset += 4u;
   }
 
   for (auto &argument : function.args()) {
@@ -324,10 +328,12 @@ X86_C::BindParameters(llvm::Function &function, bool injected_sret,
 
     declaration.type = argument.getType();
 
-    // Since there are no registers, just allocate from the stack
+    // Every stack argument occupies a whole number of 4-byte slots.
+    // (Previously the exact allocation size was used, so an `i8` followed
+    // by an `i16` were at +8 and +9.)
     declaration.mem_offset = static_cast<int64_t>(stack_offset);
     declaration.mem_reg = esp_reg;
-    stack_offset += dl.getTypeAllocSize(argument.getType());
+    stack_offset += llvm::alignTo(dl.getTypeAllocSize(argument.getType()), 4u);
 
     // Get a name for the IR parameter.
     // Need to add 1 because param_names uses logical numbering, but

@@ -14,6 +14,7 @@
 #include <llvm/ADT/SmallSet.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Analysis/ConstantFolding.h>
+#include <llvm/IR/CFG.h>
 #include <llvm/IR/DerivedUser.h>
 #include <llvm/IR/Dominators.h>
 #include <llvm/IR/InstVisitor.h>
@@ -22,6 +23,7 @@
 #include <llvm/Transforms/Utils/BasicBlockUtils.h>
 
 #include <iostream>
+#include <map>
 #include <memory>
 #include <numeric>
 #include <optional>
@@ -66,6 +68,9 @@ class PcBinding {
     return PcBinding(std::move(mapping));
   }
 };
+
+// Jump tables with more entries than this are not turned into switches.
+static constexpr uint64_t kMaxSwitchCases = 4096u;
 
 class SwitchBuilder {
  private:
@@ -120,14 +125,23 @@ class SwitchBuilder {
   CreateNativeSwitch(const JumpTableResult &jt, const PcBinding &binding,
                      llvm::LLVMContext &context) {
     auto min_index = jt.bounds.lower;
-    auto number_of_cases = (jt.bounds.upper - min_index) + 1;
+    if (!jt.bounds.lessThanOrEqual(min_index, jt.bounds.upper)) {
+      return std::nullopt;
+    }
+
+    // Count the cases without overflowing (`upper - lower + 1` wraps to zero
+    // for the full range), and refuse unreasonably large tables.
+    const auto span = (jt.bounds.upper - min_index).getLimitedValue();
+    if (span >= kMaxSwitchCases) {
+      return std::nullopt;
+    }
+    const uint64_t number_of_cases = span + 1u;
     auto interp = jt.interp.getInterp();
     llvm::SwitchInst *new_switch =
         llvm::SwitchInst::Create(jt.indexRel.getIndex(), jt.defaultOut,
-                                 number_of_cases.getLimitedValue());
-    for (llvm::APInt curr_ind_value = min_index;
-         jt.bounds.lessThanOrEqual(curr_ind_value, jt.bounds.upper);
-         curr_ind_value += 1) {
+                                 static_cast<unsigned>(number_of_cases));
+    llvm::APInt curr_ind_value = min_index;
+    for (uint64_t i = 0; i < number_of_cases; ++i, curr_ind_value += 1) {
       auto read_address = jt.indexRel.apply(interp, curr_ind_value);
       std::optional<llvm::APInt> jmp_off =
           this->ReadIntFrom(jt.pcRel.getExpectedType(jt.interp), read_address);
@@ -184,6 +198,52 @@ LowerSwitchIntrinsics::runOnIndirectJump(llvm::CallInst *targetCall,
           sbuilder.CreateNativeSwitch(jresult->second, binding, context);
 
       if (new_switch) {
+        llvm::BasicBlock *const block = follower->getParent();
+
+        // Count the edges from `block` to each successor before and after
+        // the replacement, so that PHI nodes can be updated.
+        std::map<llvm::BasicBlock *, int> edge_delta;
+        for (auto succ : llvm::successors(follower)) {
+          edge_delta[succ] -= 1;
+        }
+        for (auto succ : llvm::successors(*new_switch)) {
+          edge_delta[succ] += 1;
+        }
+
+        // The new default destination is the bounds check's failure block,
+        // which is a new successor of `block`: give its PHIs the value they
+        // receive from the (dominating) bounds-check block.
+        const auto &dt = am.getResult<llvm::DominatorTreeAnalysis>(f);
+        for (auto [succ, delta] : edge_delta) {
+          for (; delta > 0; --delta) {
+            for (auto &phi : succ->phis()) {
+              // An existing edge from `block` already gives the value.
+              llvm::Value *incoming = nullptr;
+              if (auto idx = phi.getBasicBlockIndex(block); idx >= 0) {
+                incoming = phi.getIncomingValue(static_cast<unsigned>(idx));
+              }
+              for (auto i = 0u; !incoming && i < phi.getNumIncomingValues();
+                   ++i) {
+                if (dt.dominates(phi.getIncomingBlock(i), block)) {
+                  incoming = phi.getIncomingValue(i);
+                  break;
+                }
+              }
+              phi.addIncoming(incoming ? incoming
+                                       : llvm::UndefValue::get(phi.getType()),
+                              block);
+            }
+          }
+        }
+
+        // Successors that lose edges from `block` must drop those PHI
+        // entries (while `block` is still a predecessor).
+        for (auto [succ, delta] : edge_delta) {
+          for (; delta < 0; ++delta) {
+            succ->removePredecessor(block);
+          }
+        }
+
         llvm::ReplaceInstWithInst(follower, *new_switch);
         if (targetCall->uses().empty()) {
           targetCall->eraseFromParent();

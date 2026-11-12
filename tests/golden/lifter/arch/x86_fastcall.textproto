@@ -1,0 +1,26 @@
+# 32-bit x86 fastcall: the first two 32-bit arguments are in ECX and EDX,
+# the third is on the stack at [ESP + 4], and the callee pops it (`ret 4`,
+# ESP + 8 after the return). Previously all three were taken from the stack.
+#   int __fastcall add3(int a, int b, int c) { return a + b + c; }
+#   401000: 8d 04 11 leal (%ecx,%edx), %eax
+#   401003: 03 44 24 04 addl 0x4(%esp), %eax
+#   401007: c2 04 00 retl $0x4
+# RUN: --add_names
+arch: ARCH_X86
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    calling_convention: CALLING_CONVENTION_FASTCALL
+    type {
+      function {
+        return_type { base: BT_I32 }
+        arguments { base: BT_I32 }
+        arguments { base: BT_I32 }
+        arguments { base: BT_I32 }
+      }
+    }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x8d\x04\x11\x03\x44\x24\x04\xc2\x04\x00" }
+symbols { name: "add3" address: 0x401000 }

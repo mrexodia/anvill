@@ -1,0 +1,16 @@
+# An indirect jump without targets (and without an override) becomes a tail
+# call to `__remill_jump` (previously a fatal error without an override).
+#   401000: ff e7 jmpq *%rdi
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+    parameters { name: "target" repr_var { values { reg { register_name: "RDI" } } type { base: BT_U64 } } }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\xff\xe7" }
+symbols { name: "jump_to" address: 0x401000 }

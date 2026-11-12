@@ -1,0 +1,12 @@
+# Two functions at the same address are rejected.
+# EXPECT-ERROR: Duplicate function for address 401000
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable { return_stack_pointer { reg { register_name: "RSP" } offset: 8 } }
+}
+functions {
+  entry_address: 0x401000
+  callable { return_stack_pointer { reg { register_name: "RSP" } offset: 8 } }
+}

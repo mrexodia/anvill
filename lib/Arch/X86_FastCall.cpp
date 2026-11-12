@@ -71,6 +71,27 @@ static const std::vector<RegisterConstraint> kAVXReturnRegConstraints =
 static const std::vector<RegisterConstraint> kAVX512ReturnRegConstraints =
     ApplyX86Ext(kReturnRegConstraints, remill::kArchAMD64_AVX512);
 
+// Returns the name of the part of `reg32` (`ECX` or `EDX`) that holds a value
+// of `type`, or an empty string if `type` cannot be passed in a 32-bit
+// general purpose register (only integers of at most 32 bits and pointers
+// can).
+static std::string X86RegisterPartFor(llvm::Type *type, const char *reg32) {
+  const std::string name = reg32;
+  const auto letter = name.substr(1, 1);  // "C" or "D".
+  if (type->isPointerTy()) {
+    return name;
+  } else if (auto it = llvm::dyn_cast<llvm::IntegerType>(type)) {
+    if (it->getBitWidth() <= 8) {
+      return letter + "L";
+    } else if (it->getBitWidth() <= 16) {
+      return letter + "X";
+    } else if (it->getBitWidth() <= 32) {
+      return name;
+    }
+  }
+  return {};
+}
+
 }  // namespace
 
 // This is the cdecl calling convention referenced by llvm::CallingConv::C
@@ -212,7 +233,7 @@ X86_FastCall::BindReturnValues(llvm::Function &function, bool &injected_sret,
         AllocationState alloc_ret(return_register_constraints, arch, this);
         auto mapping = alloc_ret.TryRegisterAllocate(*ret_type);
         if (mapping) {
-          mapping.getValue().swap(ret_values);
+          mapping.value().swap(ret_values);
           return llvm::Error::success();
 
         } else {
@@ -243,12 +264,14 @@ X86_FastCall::BindReturnValues(llvm::Function &function, bool &injected_sret,
       return llvm::Error::success();
     }
 
+#if LLVM_VERSION_MAJOR < 20
     case llvm::Type::X86_MMXTyID: {
       auto &value_declaration = ret_values.emplace_back();
       value_declaration.reg = arch->RegisterByName("MM0");
       value_declaration.type = ret_type;
       return llvm::Error::success();
     }
+#endif
 
     // Try to split the composite type over registers, and fall back on RVO
     // if it's not possible.
@@ -260,7 +283,7 @@ X86_FastCall::BindReturnValues(llvm::Function &function, bool &injected_sret,
 
       // There is a valid split over registers, so add the mapping
       if (mapping) {
-        return alloc_ret.CoalescePacking(mapping.getValue(), ret_values);
+        return alloc_ret.CoalescePacking(mapping.value(), ret_values);
 
       // Composite type splitting didn't work so do RVO. Assume that the
       // pointer to the return value resides in RAX.
@@ -288,7 +311,7 @@ llvm::ErrorOr<unsigned> X86_FastCall::BindParameters(
     std::vector<ParameterDecl> &parameter_declarations) {
 
   auto param_names = TryRecoverParamNames(function);
-  llvm::DataLayout dl(function.getParent());
+  const llvm::DataLayout &dl = function.getParent()->getDataLayout();
 
   // stack_offset describes the position of the first stack argument on entry to
   // the callee. For X86_FastCall, this is at [esp + 4] because the return address
@@ -297,16 +320,23 @@ llvm::ErrorOr<unsigned> X86_FastCall::BindParameters(
 
   const auto esp_reg = arch->RegisterByName("ESP");
 
-  // If there is an injected sret (an implicit sret) then we need to allocate
-  // the first parameter to the sret struct. The type of said sret parameter
-  // will be the return type of the function.
+  // The first two arguments that are integers of at most 32 bits or
+  // pointers, from left to right, are passed in ECX and EDX; all other
+  // arguments go on the stack. (Previously every argument was placed on the
+  // stack.) A pointer to a return value that is returned in memory, hidden
+  // or an explicit `sret` parameter, is passed on the stack and does not use
+  // a register: it is the first stack argument.
+  static const char *const kArgRegs[] = {"ECX", "EDX"};
+  auto next_arg_reg = 0u;
+
   if (injected_sret) {
     auto &decl = parameter_declarations.emplace_back();
 
-    decl.type = function.getReturnType();
+    decl.name = "__struct_ret_ptr";
+    decl.type = llvm::PointerType::get(function.getContext(), 0);
     decl.mem_offset = static_cast<int64_t>(stack_offset);
     decl.mem_reg = esp_reg;
-    stack_offset += dl.getTypeAllocSize(decl.type);
+    stack_offset += 4u;
   }
 
   for (auto &argument : function.args()) {
@@ -314,10 +344,23 @@ llvm::ErrorOr<unsigned> X86_FastCall::BindParameters(
 
     declaration.type = argument.getType();
 
-    // Since there are no registers, just allocate from the stack
+    if (next_arg_reg < 2u && !argument.hasStructRetAttr()) {
+      if (auto part = X86RegisterPartFor(declaration.type,
+                                         kArgRegs[next_arg_reg]);
+          !part.empty()) {
+        declaration.reg = arch->RegisterByName(part);
+        declaration.name = param_names[argument.getArgNo()];
+        ++next_arg_reg;
+        continue;
+      }
+    }
+
+    // Every stack argument occupies a whole number of 4-byte slots.
+    // (Previously the exact allocation size was used, so an `i8` followed
+    // by an `i16` were at +8 and +9.)
     declaration.mem_offset = static_cast<int64_t>(stack_offset);
     declaration.mem_reg = esp_reg;
-    stack_offset += dl.getTypeAllocSize(argument.getType());
+    stack_offset += llvm::alignTo(dl.getTypeAllocSize(argument.getType()), 4u);
 
     // Get a name for the IR parameter.
     // Need to add 1 because param_names uses logical numbering, but

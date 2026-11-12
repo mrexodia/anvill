@@ -20,11 +20,26 @@ set(POST_CONFIGURE_FILE "${CMAKE_CURRENT_BINARY_DIR}/Version.cpp")
 set(GIT_WORKING_DIR "${PROJECT_SOURCE_DIR}")
 include("${PROJECT_SOURCE_DIR}/cmake/git_watcher.cmake")
 
-find_package(Protobuf REQUIRED)
-protobuf_generate_cpp(
-  SPEC_PROTO_SOURCES
-  SPEC_PROTO_HEADERS
-  "${anvill_SOURCE_DIR}/data_specifications/specification.proto"
+# Generate the C++ code for the specification format. This invokes protoc
+# directly so that it works with both the protobuf CMake package and the
+# system protobuf (Ubuntu 22.04 ships 3.12, where proto3 `optional` fields are
+# still experimental).
+set(spec_proto "${anvill_SOURCE_DIR}/data_specifications/specification.proto")
+set(SPEC_PROTO_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/specification.pb.cc")
+set(SPEC_PROTO_HEADERS "${CMAKE_CURRENT_BINARY_DIR}/specification.pb.h")
+set(protoc_args "")
+if(Protobuf_VERSION VERSION_LESS "3.15")
+  list(APPEND protoc_args "--experimental_allow_proto3_optional")
+endif()
+add_custom_command(
+  OUTPUT ${SPEC_PROTO_SOURCES} ${SPEC_PROTO_HEADERS}
+  COMMAND protobuf::protoc ${protoc_args}
+    "--cpp_out=${CMAKE_CURRENT_BINARY_DIR}"
+    "-I${anvill_SOURCE_DIR}/data_specifications"
+    "${spec_proto}"
+  DEPENDS "${spec_proto}" protobuf::protoc
+  COMMENT "Generating C++ code for specification.proto"
+  VERBATIM
 )
 
 # List of passes. These names should each correspond with both an `.h` and a
@@ -182,6 +197,7 @@ target_include_directories(anvill PUBLIC
 target_link_libraries(anvill
   PUBLIC
     remill
+    z3::libz3
   PRIVATE
     protobuf::libprotobuf
 )

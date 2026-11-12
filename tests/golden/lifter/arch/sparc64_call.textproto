@@ -1,0 +1,32 @@
+# SPARC V9 function with a register window: `save` makes the caller's O
+# registers the callee's I registers, the call's argument is computed in its
+# delay slot, and `restore` both pops the window and computes the result
+# (g(a + 1) + a) into the caller's O0. Both functions are lifted.
+#   long g(long x) { return x << 1; }
+#   long f(long a) { return g(a + 1) + a; }
+#   401000: 9d e3 bf 50 save %sp, -176, %sp
+#   401004: 40 00 00 04 call 0x401014   (displacement set by hand: the
+#                                        assembler leaves it as a relocation)
+#   401008: 90 06 20 01 add %i0, 1, %o0
+#   40100c: 81 c7 e0 08 ret
+#   401010: 91 ea 00 18 restore %o0, %i0, %o0
+#   401014: 81 c3 e0 08 retl            (g)
+#   401018: 91 2a 30 01 sllx %o0, 1, %o0
+# RUN: --add_names
+arch: ARCH_SPARC64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    type { function { return_type { base: BT_I64 } arguments { base: BT_I64 } } }
+  }
+}
+functions {
+  entry_address: 0x401014
+  callable {
+    type { function { return_type { base: BT_I64 } arguments { base: BT_I64 } } }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x9d\xe3\xbf\x50\x40\x00\x00\x04\x90\x06\x20\x01\x81\xc7\xe0\x08\x91\xea\x00\x18\x81\xc3\xe0\x08\x91\x2a\x30\x01" }
+symbols { name: "f" address: 0x401000 }
+symbols { name: "g" address: 0x401014 }

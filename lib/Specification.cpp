@@ -15,6 +15,7 @@
 #include <remill/BC/Error.h>
 #include <remill/BC/Util.h>
 #include <remill/OS/OS.h>
+#include <google/protobuf/text_format.h>
 #include <specification.pb.h>
 #include <stddef.h>
 
@@ -111,10 +112,11 @@ SpecificationImpl::ParseSpecification(
     if (!maybe_var.Succeeded()) {
       auto err = maybe_var.Error();
       dec_err.push_back(err);
+      continue;
     }
     auto var_obj = maybe_var.Value();
     auto var_address = var_obj.address;
-    if (address_to_function.count(var_address)) {
+    if (address_to_var.count(var_address)) {
       std::stringstream ss;
       ss << "Duplicate variable for address " << std::hex << var_address;
       return ss.str();
@@ -170,10 +172,6 @@ SpecificationImpl::ParseSpecification(
     }
   }
 
-  if (!spec.has_overrides()) {
-    return {"Spec has no control flow overrides"};
-  }
-
   for (auto &jump : spec.overrides().jumps()) {
     Jump jmp{};
     jmp.stop = jump.stop();
@@ -190,7 +188,12 @@ SpecificationImpl::ParseSpecification(
         [](const auto &a, const auto &b) { return a.address < b.address; });
     jumps.push_back(jmp);
     const auto res = control_flow_overrides.emplace(jmp.address, jmp);
-    CHECK(res.second);
+    if (!res.second) {
+      std::stringstream ss;
+      ss << "Multiple control-flow overrides for address " << std::hex
+         << jmp.address;
+      return ss.str();
+    }
   }
   std::sort(jumps.begin(), jumps.end(),
             [](const auto &a, const auto &b) { return a.address < b.address; });
@@ -208,7 +211,12 @@ SpecificationImpl::ParseSpecification(
     callspec.is_tailcall = call.is_tailcall();
     calls.push_back(callspec);
     const auto res = control_flow_overrides.emplace(callspec.address, callspec);
-    CHECK(res.second);
+    if (!res.second) {
+      std::stringstream ss;
+      ss << "Multiple control-flow overrides for address " << std::hex
+         << callspec.address;
+      return ss.str();
+    }
   }
   std::sort(calls.begin(), calls.end(),
             [](const auto &a, const auto &b) { return a.address < b.address; });
@@ -219,7 +227,12 @@ SpecificationImpl::ParseSpecification(
     overr.address = ret.address();
     returns.push_back(overr);
     const auto res = control_flow_overrides.emplace(overr.address, overr);
-    CHECK(res.second);
+    if (!res.second) {
+      std::stringstream ss;
+      ss << "Multiple control-flow overrides for address " << std::hex
+         << overr.address;
+      return ss.str();
+    }
   }
   std::sort(returns.begin(), returns.end(),
             [](const auto &a, const auto &b) { return a.address < b.address; });
@@ -230,7 +243,12 @@ SpecificationImpl::ParseSpecification(
     overr.address = misc.address();
     misc_overrides.push_back(overr);
     const auto res = control_flow_overrides.emplace(overr.address, overr);
-    CHECK(res.second);
+    if (!res.second) {
+      std::stringstream ss;
+      ss << "Multiple control-flow overrides for address " << std::hex
+         << overr.address;
+      return ss.str();
+    }
   }
   std::sort(misc_overrides.begin(), misc_overrides.end(),
             [](const auto &a, const auto &b) { return a.address < b.address; });
@@ -289,8 +307,13 @@ GetArch(llvm::LLVMContext &context,
     case ::specification::ARCH_AARCH32:
       arch_name = remill::kArchAArch32LittleEndian;
       break;
-    case ::specification::ARCH_SPARC32: arch_name = remill::kArchSparc32; break;
-    case ::specification::ARCH_SPARC64: arch_name = remill::kArchSparc64; break;
+    // Both SPARCs are lifted with Sleigh (see dependencies/remill).
+    case ::specification::ARCH_SPARC32:
+      arch_name = remill::kArchSparc32;
+      break;
+    case ::specification::ARCH_SPARC64:
+      arch_name = remill::kArchSparc64;
+      break;
   }
 
   switch (spec.operating_system()) {
@@ -372,6 +395,20 @@ Specification::DecodeFromPB(llvm::LLVMContext &context, std::istream &pb) {
   return Specification(std::move(pimpl));
 }
 
+anvill::Result<Specification, std::string>
+Specification::DecodeFromTextPB(llvm::LLVMContext &context,
+                                const std::string &text) {
+  ::specification::Specification spec;
+  if (!google::protobuf::TextFormat::ParseFromString(text, &spec)) {
+    return {"Failed to parse text-format specification"};
+  }
+  std::string pb;
+  if (!spec.SerializeToString(&pb)) {
+    return {"Failed to serialize specification"};
+  }
+  return DecodeFromPB(context, pb);
+}
+
 // Return the function beginning at `address`, or an empty `shared_ptr`.
 std::shared_ptr<const FunctionDecl>
 Specification::FunctionAt(std::uint64_t address) const {
@@ -395,15 +432,34 @@ Specification::VariableAt(std::uint64_t address) const {
   return {};
 }
 
+// Return the variable whose bytes include `address`, or `nullptr`.
+const VariableDecl *
+SpecificationImpl::VariableContaining(std::uint64_t address) const {
+  // `variables` is sorted by address; find the last variable starting at or
+  // before `address` and check that it covers `address`.
+  auto it = std::upper_bound(
+      variables.begin(), variables.end(), address,
+      [](std::uint64_t addr, const VariableDeclPtr &var) {
+        return addr < var->address;
+      });
+  if (it == variables.begin()) {
+    return nullptr;
+  }
+  const VariableDecl *var = (--it)->get();
+  const auto size = arch->DataLayout().getTypeAllocSize(var->type);
+  if (address < var->address + size) {
+    return var;
+  }
+  return nullptr;
+}
+
 // Return the global variable containing `address`, or an empty `shared_ptr`.
 std::shared_ptr<const VariableDecl>
 Specification::VariableContaining(std::uint64_t address) const {
-  auto it = impl->address_to_var.find(address);
-  if (it != impl->address_to_var.end()) {
-    return std::shared_ptr<const VariableDecl>(impl, it->second);
-  } else {
-    return {};
+  if (auto var = impl->VariableContaining(address)) {
+    return std::shared_ptr<const VariableDecl>(impl, var);
   }
+  return {};
 }
 
 // Call `cb` on each symbol in the spec, until `cb` returns `false`.

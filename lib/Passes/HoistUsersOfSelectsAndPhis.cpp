@@ -185,8 +185,11 @@ static bool FoldSelectWithBinaryOp(
 
   // This binary operator is using our `select` instruction. Take the
   // operand on the opposite side
+  // Remember on which side the select is: `sub C, select` is not the same as
+  // `sub select, C`.
   auto operand = binary_op_instr->getOperand(0U);
-  if (operand == select_instr) {
+  const bool select_on_rhs = operand != select_instr;
+  if (!select_on_rhs) {
     operand = binary_op_instr->getOperand(1U);
   }
 
@@ -202,9 +205,13 @@ static bool FoldSelectWithBinaryOp(
   auto opcode =
       static_cast<llvm::Instruction::BinaryOps>(binary_op_instr->getOpcode());
 
-  auto new_true_value = builder.CreateBinOp(opcode, true_value, operand);
+  auto new_true_value =
+      select_on_rhs ? builder.CreateBinOp(opcode, operand, true_value)
+                    : builder.CreateBinOp(opcode, true_value, operand);
   CopyMetadataTo(binary_op_instr, new_true_value);
-  auto new_false_value = builder.CreateBinOp(opcode, false_value, operand);
+  auto new_false_value =
+      select_on_rhs ? builder.CreateBinOp(opcode, operand, false_value)
+                    : builder.CreateBinOp(opcode, false_value, operand);
   CopyMetadataTo(binary_op_instr, new_false_value);
 
   auto replacement =
@@ -306,6 +313,33 @@ static bool FoldSelectWithGEPInst(
   llvm::GetElementPtrInst *gep_instr =
       llvm::dyn_cast<llvm::GetElementPtrInst>(gep_instr_);
 
+  llvm::IRBuilder<> builder(gep_instr);
+
+  // The select is the base pointer: the new GEPs are built where the old GEP
+  // is, so every index is available.
+  if (gep_instr->getPointerOperand() == select_instr) {
+    std::vector<llvm::Value *> indices(gep_instr->idx_begin(),
+                                       gep_instr->idx_end());
+    for (auto index : indices) {
+      if (index == select_instr) {
+        return false;
+      }
+    }
+    auto new_true_value = builder.CreateGEP(
+        gep_instr->getSourceElementType(), true_value, indices, "",
+        gep_instr->isInBounds());
+    CopyMetadataTo(gep_instr, new_true_value);
+    auto new_false_value = builder.CreateGEP(
+        gep_instr->getSourceElementType(), false_value, indices, "",
+        gep_instr->isInBounds());
+    CopyMetadataTo(gep_instr, new_false_value);
+    auto replacement =
+        builder.CreateSelect(condition, new_true_value, new_false_value);
+    CopyMetadataTo(select_instr, replacement);
+    output = llvm::dyn_cast<llvm::Instruction>(replacement);
+    return output != nullptr;
+  }
+
   std::vector<llvm::Value *> index_list;
   if (!CollectAndValidateGEPIndexes(index_list, select_instr, gep_instr)) {
     return false;
@@ -313,17 +347,18 @@ static bool FoldSelectWithGEPInst(
 
   llvm::Value *new_true_value = nullptr;
   llvm::Value *new_false_value = nullptr;
-  llvm::IRBuilder<> builder(gep_instr);
 
   for (auto &index : index_list) {
     if (index == select_instr) {
       index = true_value;
       new_true_value = builder.CreateGEP(gep_instr->getSourceElementType(),
-                                         gep_instr->getOperand(0), index_list);
+                                         gep_instr->getOperand(0), index_list,
+                                         "", gep_instr->isInBounds());
       CopyMetadataTo(gep_instr, new_true_value);
       index = false_value;
       new_false_value = builder.CreateGEP(gep_instr->getSourceElementType(),
-                                          gep_instr->getOperand(0), index_list);
+                                          gep_instr->getOperand(0), index_list,
+                                          "", gep_instr->isInBounds());
       CopyMetadataTo(gep_instr, new_false_value);
       break;
     }
@@ -575,8 +610,11 @@ bool HoistUsersOfSelectsAndPhis::PassFunctionState::FoldPHINodeWithBinaryOp(
 
   // This binary operator is using our `PHINode` instruction. Take the
   // operand on the opposite side
+  // Remember on which side the PHI is: `sub C, phi` is not the same as
+  // `sub phi, C`.
   auto operand = binary_op_instr->getOperand(0U);
-  if (operand == phi_node) {
+  const bool phi_on_rhs = operand != phi_node;
+  if (!phi_on_rhs) {
     operand = binary_op_instr->getOperand(1U);
   }
 
@@ -601,7 +639,9 @@ bool HoistUsersOfSelectsAndPhis::PassFunctionState::FoldPHINodeWithBinaryOp(
 
     IncomingValue new_incoming_value;
     new_incoming_value.value =
-        builder.CreateBinOp(opcode, incoming_value.value, operand);
+        phi_on_rhs
+            ? builder.CreateBinOp(opcode, operand, incoming_value.value)
+            : builder.CreateBinOp(opcode, incoming_value.value, operand);
     CopyMetadataTo(binary_op_instr, new_incoming_value.value);
 
     new_incoming_value.basic_block = incoming_value.basic_block;

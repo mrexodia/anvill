@@ -1,0 +1,19 @@
+# With --add_breakpoints every lifted instruction is preceded by a call to
+# `breakpoint_<pc>(mem, PC, NEXT_PC)`; the functions are `optnone` so the
+# calls survive optimization (previously the flag was ignored).
+#   401000: 8d 47 01 leal 0x1(%rdi), %eax
+#   401003: c3 retq
+# RUN: --add_names --add_breakpoints
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+    parameters { name: "x" repr_var { values { reg { register_name: "EDI" } } type { base: BT_I32 } } }
+    return { values { reg { register_name: "EAX" } } type { base: BT_I32 } }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x8d\x47\x01\xc3" }
+symbols { name: "inc" address: 0x401000 }

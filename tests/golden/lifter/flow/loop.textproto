@@ -1,0 +1,23 @@
+# A backwards branch produces a loop.
+#   int sum(int n) { int s = 0; while (n) { s += n; n--; } return s; }
+#   401000: 31 c0 xorl %eax, %eax
+#   401002: 85 ff testl %edi, %edi
+#   401004: 74 06 je 0x40100c <.text+0xc>
+#   401006: 01 f8 addl %edi, %eax
+#   401008: ff cf decl %edi
+#   40100a: eb f6 jmp 0x401002 <.text+0x2>
+#   40100c: c3 retq
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+    parameters { name: "n" repr_var { values { reg { register_name: "EDI" } } type { base: BT_I32 } } }
+    return { values { reg { register_name: "EAX" } } type { base: BT_I32 } }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x31\xc0\x85\xff\x74\x06\x01\xf8\xff\xcf\xeb\xf6\xc3" }
+symbols { name: "sum" address: 0x401000 }

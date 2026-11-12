@@ -1,0 +1,41 @@
+# A frame-pointer function that spills its argument to the stack and calls an
+# external function. The callee's prototype comes from its own function
+# declaration (FUNCTION_LINKAGE_EXTERNAL: declared, not lifted). The stack
+# frame is recovered into an alloca and then removed by SROA.
+#   int g(int);
+#   int f(int a) { return g(a * 3) + a; }
+#   401000: 55 pushq %rbp
+#   401001: 48 89 e5 movq %rsp, %rbp
+#   401004: 48 83 ec 10 subq $0x10, %rsp
+#   401008: 89 7d fc movl %edi, -0x4(%rbp)
+#   40100b: 6b ff 03 imull $0x3, %edi, %edi
+#   40100e: e8 ed 0f 00 00 callq 0x402000 <.text+0x1000>
+#   401013: 03 45 fc addl -0x4(%rbp), %eax
+#   401016: 48 83 c4 10 addq $0x10, %rsp
+#   40101a: 5d popq %rbp
+#   40101b: c3 retq
+# RUN: --add_names
+arch: ARCH_AMD64
+operating_system: OS_LINUX
+functions {
+  entry_address: 0x401000
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+    parameters { name: "a" repr_var { values { reg { register_name: "EDI" } } type { base: BT_I32 } } }
+    return { values { reg { register_name: "EAX" } } type { base: BT_I32 } }
+  }
+}
+functions {
+  entry_address: 0x402000
+  func_linkage: FUNCTION_LINKAGE_EXTERNAL
+  callable {
+    return_address { mem { base_reg: "RSP" offset: 0 } }
+    return_stack_pointer { reg { register_name: "RSP" } offset: 8 }
+    parameters { name: "a" repr_var { values { reg { register_name: "EDI" } } type { base: BT_I32 } } }
+    return { values { reg { register_name: "EAX" } } type { base: BT_I32 } }
+  }
+}
+memory_ranges { address: 0x401000 is_executable: true values: "\x55\x48\x89\xe5\x48\x83\xec\x10\x89\x7d\xfc\x6b\xff\x03\xe8\xed\x0f\x00\x00\x03\x45\xfc\x48\x83\xc4\x10\x5d\xc3" }
+symbols { name: "f" address: 0x401000 }
+symbols { name: "g" address: 0x402000 }

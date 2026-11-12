@@ -10,6 +10,8 @@ add_executable(test_anvill
   src/main.cpp
   src/Result.cpp
   src/TypeSpecification.cpp
+  src/SpecificationTest.cpp
+  src/CrossReferenceFolderTest.cpp
 )
 
 target_link_libraries(test_anvill PRIVATE

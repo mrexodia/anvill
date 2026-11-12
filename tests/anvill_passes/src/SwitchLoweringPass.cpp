@@ -1,4 +1,5 @@
 #include <anvill/Passes/JumpTableAnalysis.h>
+#include <llvm/Support/Endian.h>
 #include <anvill/Passes/LowerSwitchIntrinsics.h>
 #include <anvill/Providers.h>
 #include <anvill/Transforms.h>
@@ -70,7 +71,7 @@ namespace {
 
 static llvm::Function *FindFunction(llvm::Module *module, std::string name) {
   for (auto &function : *module) {
-    if (function.getName().equals(name)) {
+    if (function.getName() == name) {
       return &function;
     }
   }
@@ -299,9 +300,9 @@ TEST_SUITE("SwitchLowerLargeFunction") {
     CHECK(lowered_switch->getNumCases() == 4);
 
     llvm::SmallSet<uint64_t, 10> allowed_indices;
-    allowed_indices.insert(llvm::APInt(32, -4).getLimitedValue());
-    allowed_indices.insert(llvm::APInt(32, -1).getLimitedValue());
-    allowed_indices.insert(llvm::APInt(32, -0).getLimitedValue());
+    allowed_indices.insert(llvm::APInt(32, -4, /*isSigned=*/true).getLimitedValue());
+    allowed_indices.insert(llvm::APInt(32, -1, /*isSigned=*/true).getLimitedValue());
+    allowed_indices.insert(llvm::APInt(32, -0, /*isSigned=*/true).getLimitedValue());
     allowed_indices.insert(llvm::APInt(32, 3).getLimitedValue());
 
     for (auto c : lowered_switch->cases()) {

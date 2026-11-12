@@ -1,0 +1,31 @@
+@ret_mixed { i64, double } (i32, float, ptr) cc 0
+  abi type: { i64, double } (i32, float, ptr)
+  calling convention: 78
+  param a: EDI : i32
+  param b: XMM0 : float
+  param c: RSI : ptr
+  return: RAX : i64
+  return: XMM0 : double
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@floats double (float, double, i32) cc 0
+  abi type: double (float, double, i32)
+  calling convention: 78
+  param a: XMM0 : float
+  param b: XMM1 : double
+  param c: EDI : i32
+  return: XMM0 : double
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+
+@wide_vector <8 x float> (<8 x float>, <4 x double>, double) cc 0
+  abi type: <8 x float> (<8 x float>, <4 x double>, double)
+  calling convention: 78
+  param v: YMM0 : <8 x float>
+  param w: YMM1 : <4 x double>
+  param d: XMM2 : double
+  return: YMM0 : <8 x float>
+  return address: [RSP] : i64
+  stack pointer on return: RSP + 8
+

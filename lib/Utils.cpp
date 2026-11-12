@@ -467,7 +467,7 @@ static bool IsLoadOfUnmodelledRegister(llvm::LoadInst *load, RegNamePred pred) {
   if (auto gv =
           llvm::dyn_cast<llvm::GlobalVariable>(load->getPointerOperand())) {
     if (const auto gv_name = gv->getName();
-        gv_name.startswith(kUnmodelledRegisterPrefix)) {
+        gv_name.starts_with(kUnmodelledRegisterPrefix)) {
       return pred(gv->getParent(),
                   gv_name.substr(kUnmodelledRegisterPrefix.size()).lower());
     }
@@ -637,6 +637,11 @@ bool IsProgramCounter(llvm::Module *, llvm::Value *val) {
   }
 }
 
+// Returns `true` if `v` is a displacement from the return address at which
+// a function can return. On SPARC, the return address register holds the
+// address of the call: functions return to it plus 8 (past the call and its
+// delay slot), and functions returning a structure return to it plus 12
+// (also past the `unimp <size>` that follows the delay slot).
 static bool IsAcceptableReturnAddressDisplacement(llvm::Module *module,
                                                   llvm::Constant *v) {
   auto ci = llvm::dyn_cast<llvm::ConstantInt>(v);
@@ -651,7 +656,7 @@ static bool IsAcceptableReturnAddressDisplacement(llvm::Module *module,
     case llvm::Triple::ArchType::sparc:
     case llvm::Triple::ArchType::sparcel:
     case llvm::Triple::ArchType::sparcv9:
-      return disp == 0u || disp == 4u || disp == 8u;
+      return disp == 0u || disp == 4u || disp == 8u || disp == 12u;
     default: return disp == 0;
   }
 }
@@ -671,7 +676,7 @@ bool IsReturnAddress(llvm::Module *module, llvm::Value *val) {
         call->getIntrinsicID() == llvm::Intrinsic::sponentry) {
       return true;
     } else if (auto func = call->getCalledFunction();
-               func && func->getName().startswith("__remill_read_memory_")) {
+               func && func->getName().starts_with("__remill_read_memory_")) {
       return addressofreturnaddress(
           llvm::dyn_cast<llvm::CallBase>(call->getArgOperand(1)));
     } else {
